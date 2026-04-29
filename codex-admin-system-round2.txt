@@ -1,0 +1,266 @@
+我已根据你的反馈修改了计划。
+
+已采纳并修改：
+- 进程边界不清：明确第一版采用 FastAPI 后端 + 独立录制 worker 子进程，不直接 import main.py 全局状态。
+- 任务生命周期不完整：增加 recording job 状态机、允许迁移和幂等 start/stop 规则。
+- SQLite 并发风险：增加 WAL、每线程独立连接、短事务和 database locked 重试策略。
+- 配置双写不一致：明确后台模式数据库为权威源，ini 仅导入/导出。
+- 停止录制可行性不足：增加 ffmpeg/FLV 优雅停止协议、超时处理和文件登记规则。
+- 上传状态迁移风险：增加 upload_records 唯一约束、幂等迁移和重复上传防护。
+- Analytics 指标过宽：第一版只做 YouTube Data API 基础指标，Analytics API 后置。
+- API 契约缺失：增加首批 API 和错误码。
+- 数据模型字段不足：增加配置快照、分段序号、文件 identity、上传配置版本等。
+- FastAPI 生命周期未设计：增加 lifespan、进程锁/数据库租约。
+- main.py 拆分切入点不清：增加低风险拆分顺序。
+- 前端技术栈不确定：第一版改为 FastAPI + Jinja/HTMX 或极简页面，SPA 后置。
+- 验证计划缺少自动化测试：增加 pytest/API/worker/前端冒烟测试。
+- 日志与可观测性不足：增加 job_id/file_id/upload_id 关联日志和事件流。
+- 文件路径规则不细：增加 Path.resolve、根目录校验和 Windows 路径处理。
+- 部署启动缺失：增加 python -m server、默认端口、数据库位置。
+- 报表维度过早复杂：第一版按 video_id/date，主播维度后置。
+- Non-goals 不够明确：增加公网、多人、多机器、移动端等非目标。
+
+未采纳及理由：无。
+
+<updated-plan>
+# DouyinLiveRecorder 后台管理与监控系统扩展计划
+
+## Context
+
+当前项目是一个以 `main.py` 为核心的命令行直播录制工具，配置来自 `config/config.ini` 和 `config/URL_config.ini`，运行状态主要靠终端输出和日志观察。近期已新增 YouTube 自动上传能力，但上传记录仍以本地 JSON 状态文件为主，缺少图形化管理、任务监控、历史记录和数据报表。
+
+目标是把项目逐步扩展成一个本机优先、用户友好的后台系统：用户可以在浏览器里配置录制参数、管理直播间、查看录制状态、查看上传记录，并查看 YouTube 视频播放数据报表。
+
+## Product goals
+
+1. 图形化配置：在网页后台配置直播间、录制格式、保存路径、代理、分段录制、YouTube 上传参数。
+2. 录制监控：展示当前监控/录制任务、录制时长、文件大小、状态、最近错误，并支持开始/停止单个任务。
+3. 上传记录：记录每个视频的上传状态、YouTube video id、标题、发布时间、失败原因、重试次数，支持手动重试。
+4. 视频数据报表：第一版只拉取 YouTube Data API 可直接获取的基础指标，例如播放量、点赞数、评论数；观看时长、流量来源等 Analytics API 指标放到后续阶段。
+5. 用户友好：避免用户直接编辑 ini 文件；敏感凭证只保存本地路径和有效性状态，不在前端明文展示。
+
+## Process boundary
+
+第一版明确采用“Web 后端 + 独立录制 worker 子进程”的边界，避免 FastAPI 直接 import 并调用 `main.py` 的全局状态。
+
+- FastAPI 负责配置、任务命令、状态查询、数据库写入和前端 API。
+- 录制 worker 负责实际录制、ffmpeg 子进程、直连 FLV 下载和录制完成事件。
+- 后端通过数据库中的任务命令表或轻量本地 IPC 向 worker 下发 start/stop 请求。
+- worker 把状态事件写回数据库：录制开始、探测中、录制中、停止中、文件生成、上传开始、上传成功、上传失败。
+- CLI 可继续保留，但后台模式下数据库是权威来源；ini 只作为导入/导出兼容文件。
+
+这样做的原因：当前 `main.py` 使用大量全局变量、线程和终端交互，同进程接入 FastAPI 容易造成状态污染、重复启动、阻塞和难以停止。
+
+## Recommended architecture
+
+采用渐进式改造，不一次性重写录制核心：
+
+1. 保留现有录制逻辑作为 worker 内部的“录制引擎”。
+2. 新增 FastAPI 后端，负责配置管理、任务控制、状态查询、上传记录、报表 API。
+3. 新增 SQLite 数据库，作为后台模式的配置、任务、文件、上传记录和分析指标权威来源。
+4. 第一版前端优先使用 FastAPI + Jinja/HTMX 或极简页面，减少构建复杂度；API 稳定后再引入 React/Vue SPA。
+5. 逐步把 `main.py` 中的配置解析、直播间模型、录制完成事件抽到可被 CLI 和 worker 复用的模块。
+
+## Phase 1: 数据库、状态机和后台 API 骨架
+
+新增后端目录，例如 `server/`：
+
+- `server/app.py`：FastAPI 应用入口和 lifespan。
+- `server/db.py`：SQLite 连接、WAL 初始化和事务工具。
+- `server/models.py`：数据表定义。
+- `server/config_service.py`：导入/导出 ini，后台模式下以数据库为权威源。
+- `server/recording_service.py`：创建任务命令、查询任务状态。
+- `server/upload_service.py`：上传记录查询和失败重试。
+- `server/analytics_service.py`：拉取和缓存 YouTube 基础数据。
+- `server/path_service.py`：统一路径规范化和下载目录边界校验。
+
+首批数据表：
+
+- `rooms`：直播间 URL、主播名、平台、清晰度、是否启用、创建/更新时间。
+- `recording_jobs`：room_id、状态、开始时间、结束时间、错误信息、配置快照、关联 ID。
+- `recorded_files`：job_id、room_id、本地绝对路径、大小、格式、分段序号、时长、创建时间、可选 checksum。
+- `upload_records`：recorded_file_id、本地文件 identity、YouTube video id、标题、隐私状态、状态、失败原因、重试次数、上传配置版本。
+- `youtube_metrics`：video id、日期、播放量、点赞数、评论数、拉取时间。
+- `settings`：全局录制设置和上传设置。
+- `task_commands`：后端发给 worker 的 start/stop/retry 命令及处理结果。
+
+SQLite 约束：
+
+- 启用 WAL 模式。
+- 每个线程/请求使用独立连接。
+- 写操作保持短事务。
+- 统一通过 service/repository 层写入。
+- 遇到 `database is locked` 做有限次数退避重试。
+
+## Recording job state machine
+
+录制任务状态枚举：
+
+- `pending`：已创建，等待 worker 处理。
+- `probing`：正在解析平台和直播源。
+- `recording`：正在录制。
+- `stopping`：用户请求停止，正在优雅收尾。
+- `completed`：自然结束且文件已登记。
+- `interrupted`：用户停止后文件已登记。
+- `failed`：异常失败，无可用文件或需要人工处理。
+
+允许迁移：
+
+- pending → probing → recording → completed
+- pending/probing/recording → stopping → interrupted
+- pending/probing/recording/stopping → failed
+
+幂等规则：
+
+- 对正在运行的 room 重复 start，返回现有 active job，不创建重复任务。
+- 对非运行任务 stop，返回当前状态，不报错。
+- worker 重启后扫描 `pending/probing/recording/stopping` 的旧任务，标记为 `failed` 或根据已生成文件登记为 `interrupted`。
+
+## Stop protocol
+
+停止录制必须优先保证文件可用：
+
+1. 后端写入 stop 命令，job 进入 `stopping`。
+2. worker 对 ffmpeg 录制优先发送 `q`，等待固定超时时间。
+3. 超时后再终止 ffmpeg 子进程，并记录是否生成可用文件。
+4. 对直连 FLV 下载，设置停止标记，让下载循环退出并关闭文件句柄。
+5. 停止后扫描已知输出路径和分段文件，登记到 `recorded_files`。
+6. 如果启用上传，创建 `upload_records`，由上传 worker 继续处理。
+
+## Configuration authority and migration
+
+后台模式下数据库是权威来源。
+
+迁移规则：
+
+1. 首次启动后台时读取 `config.ini` 和 `URL_config.ini` 导入数据库。
+2. 导入后 Web 后台只写数据库。
+3. ini 文件只作为导入来源和手动导出目标，不做持续双写。
+4. 如果用户手动修改 ini，需要在后台点击“重新导入”，并显示冲突预览。
+5. CLI 继续使用 ini；后台模式使用数据库。两种模式不同时作为权威源。
+
+## API contract for first version
+
+首批 API：
+
+- `GET /api/rooms`：返回直播间列表。
+- `POST /api/rooms`：新增直播间；校验 URL、平台、清晰度。
+- `PATCH /api/rooms/{id}`：编辑直播间配置。
+- `POST /api/rooms/{id}/start`：幂等启动；如果已有 active job，返回它。
+- `POST /api/rooms/{id}/stop`：幂等停止；如果未运行，返回当前状态。
+- `GET /api/jobs`：按状态查询任务。
+- `GET /api/files`：查询录制文件，支持 room/date/status 过滤。
+- `GET /api/uploads`：查询上传记录。
+- `POST /api/uploads/{id}/retry`：对 failed 上传记录重试。
+- `GET /api/metrics/videos`：查询 YouTube 基础指标。
+- `GET /api/events/recent`：查询最近事件流，方便排障。
+
+错误处理：
+
+- 400：参数非法，例如 URL 或路径不合法。
+- 404：资源不存在。
+- 409：状态冲突，例如配置冲突或命令已存在。
+- 500：内部错误，但响应中不包含 token、cookie、client secret。
+
+## Phase 2: 录制引擎适配顺序
+
+按低风险边界拆分，不先重写主循环：
+
+1. 抽配置解析：把 ini 配置读取转为纯函数/数据对象。
+2. 抽直播间列表模型：把 URL 行解析转为可测试函数。
+3. 抽录制完成事件：统一 `record_started`、`file_completed`、`record_failed`、`upload_changed` 事件。
+4. worker 先复用现有录制流程，只在关键事件点写数据库。
+5. 最后再考虑把 `start_record()` 拆成更小的可控制函数。
+
+## Phase 3: Web 管理界面
+
+第一版页面：
+
+1. 仪表盘：当前录制数、今日生成视频数、上传成功/失败数、最近错误。
+2. 直播间管理：新增、编辑、启用/停用、手动开始/停止录制。
+3. 配置页面：录制格式、保存路径、代理、分段录制、YouTube 上传设置。
+4. 文件与上传记录：查看文件、上传状态、YouTube 链接、失败重试。
+5. 报表页面：按 video_id/date 展示 YouTube 基础指标；主播维度等房间与文件关联稳定后再做。
+
+前端不直接访问本地文件和凭证，只通过后端 API 操作。
+
+## Phase 4: YouTube 上传与数据分析
+
+上传：
+
+- 当前 `src/youtube_uploader.py` 的 JSON 状态迁移到数据库表 `upload_records`。
+- `upload_records` 对 `recorded_file_id` 或稳定文件 identity 设置唯一约束，避免重复上传。
+- 迁移脚本必须可重复运行；已迁移 JSON 记录要标记来源和迁移时间。
+- 上传前创建记录，上传中更新进度，成功后写入 video id，失败后写入错误和重试次数。
+- 后台页面支持对 failed 记录手动重试，超过最大重试次数需人工确认。
+
+数据分析：
+
+- 第一版仅使用 YouTube Data API 获取播放量、点赞数、评论数。
+- YouTube Analytics API 作为后续 Phase 4.5：单独设计 scope、授权账户、数据延迟、失败降级和更细数据模型。
+- 定时任务每天拉取一次指标并写入 `youtube_metrics`，避免每次打开页面都打 API。
+
+## Background tasks and observability
+
+- 使用 FastAPI lifespan 启动和停止后台任务。
+- 用数据库租约或进程锁避免开发 reload/重复启动造成多个 scheduler 同时运行。
+- 所有日志和事件记录带 `job_id`、`file_id`、`upload_id`，方便从页面追踪一条录制到上传的完整链路。
+- 后台页面提供最近事件流：任务命令、录制状态、上传状态、指标拉取错误。
+
+## Path safety
+
+- 所有用户输入路径统一经过 `Path.resolve()`。
+- 保存到数据库前转为规范化绝对路径。
+- 文件操作必须校验路径位于允许的下载目录或配置目录内。
+- Windows 下要处理盘符、大小写和分隔符差异。
+- 禁止 API 读取任意系统文件。
+
+## Security and privacy
+
+- OAuth client secret 和 token 文件不入库、不显示全文，只保存本地路径和是否有效。
+- 后台默认只监听 `127.0.0.1`。
+- 如果用户显式开启局域网访问，必须先加入登录认证。
+- API 不返回 Cookie、OAuth token、client secret 的明文。
+- 日志中屏蔽敏感字段。
+
+## Verification plan
+
+自动化测试：
+
+1. pytest：ini 导入、URL 行解析、路径边界校验、状态机迁移、SQLite repository 写入、上传记录迁移幂等性。
+2. API 测试：rooms CRUD、start/stop 幂等性、jobs/files/uploads 查询、retry 行为。
+3. worker 测试：用短时 mock/fixture 录制命令验证状态事件和文件登记。
+4. 前端冒烟：能打开仪表盘、房间列表、上传记录页。
+
+人工端到端验证：
+
+1. 启动 FastAPI 后端，确认 SQLite 表自动创建。
+2. 从现有 ini 导入配置和直播间，前端能看到相同数据。
+3. 在前端新增/停用直播间，确认录制 worker 按预期启动/停止。
+4. 录制短视频，确认 `recorded_files` 和 `upload_records` 生成记录。
+5. 触发 YouTube 上传，确认上传状态从 pending → uploading → uploaded/failed。
+6. 重启后台，确认任务记录、上传记录和配置仍可查询。
+7. 拉取 YouTube 视频基础指标，确认报表页面能按日期和视频展示数据。
+8. 检查敏感信息不会在 API 响应和日志中泄露。
+
+## Deployment and startup
+
+第一版提供本机启动命令：
+
+- `python -m server` 启动后台，默认监听 `127.0.0.1:8000`。
+- SQLite 默认放在 `config/admin.db`。
+- 日志继续写入 `logs/`，后台新增 API/worker 事件日志。
+- CLI 模式仍可用，但与后台模式分开运行，避免两个模式同时控制同一批直播间。
+
+## Non-goals for first version
+
+- 不做多用户权限系统；第一版只面向本机个人使用。
+- 不做公网访问保证。
+- 不做多人同时操作。
+- 不做移动端适配。
+- 不做分布式录制节点或多机器协同。
+- 不引入 Redis/Celery/Kubernetes；先用 SQLite + worker 子进程 + 轻量定时任务。
+- 不重写所有平台抓取逻辑；录制核心沿用现有 spider/stream/main.py 能力。
+</updated-plan>
+
+请继续审查更新后的计划。如果没有新的问题，回复 "LGTM"。
