@@ -37,7 +37,9 @@
 2. 录制监控：展示当前监控/录制任务、录制时长、文件大小、状态、最近错误，并支持开始/停止单个任务。
 3. 上传记录：记录每个视频的上传状态、YouTube video id、标题、发布时间、失败原因、重试次数，支持手动重试。
 4. 视频数据报表：第一版只拉取 YouTube Data API 可直接获取的基础指标，例如播放量、点赞数、评论数；观看时长、流量来源等 Analytics API 指标放到后续阶段。
-5. 用户友好：避免用户直接编辑 ini 文件；敏感凭证只保存本地路径和有效性状态，不在前端明文展示。
+5. 下载目录自动化：实时监控 `downloads` 或用户配置目录，发现稳定的新视频文件后自动进入编码与 YouTube 上传流程。
+6. Douyin 采集下载：提供 API 触发的抖音单作品下载和用户主页公开视频批量下载，下载产物进入统一文件管理与后续上传链路。
+7. 用户友好：避免用户直接编辑 ini 文件；敏感凭证只保存本地路径和有效性状态，不在前端明文展示。
 
 ## Process boundary
 
@@ -47,6 +49,7 @@
 - 录制 worker 负责实际录制、ffmpeg 子进程、直连 FLV 下载和录制完成事件。
 - 后端通过数据库中的任务命令表或轻量本地 IPC 向 worker 下发 start/stop 请求。
 - worker 把状态事件写回数据库：录制开始、探测中、录制中、停止中、文件生成、上传开始、上传成功、上传失败。
+- Douyin 采集下载 API 作为后端服务能力运行，不直接 import `main.py`；采集核心放在独立模块，下载完成后通过统一文件登记/目录监控进入上传链路。
 - CLI 可继续保留，但后台模式下数据库是权威来源；ini 只作为导入/导出兼容文件。
 
 这样做的原因：当前 `main.py` 使用大量全局变量、线程和终端交互，同进程接入 FastAPI 容易造成状态污染、重复启动、阻塞和难以停止。
@@ -71,6 +74,8 @@
 - `server/config_service.py`：导入/导出 ini，后台模式下以数据库为权威源。
 - `server/recording_service.py`：创建任务命令、查询任务状态。
 - `server/upload_service.py`：上传记录查询和失败重试。
+- `server/download_watch_service.py`：实时监控下载目录，稳定文件检测、编码触发和文件登记。
+- `server/douyin_collection_service.py`：抖音单作品/用户主页采集下载任务编排。
 - `server/analytics_service.py`：拉取和缓存 YouTube 基础数据。
 - `server/path_service.py`：统一路径规范化和下载目录边界校验。
 
@@ -79,9 +84,12 @@
 - `rooms`：直播间 URL、主播名、平台、清晰度、是否启用、创建/更新时间。
 - `recording_jobs`：room_id、状态、开始时间、结束时间、错误信息、配置快照、关联 ID。
 - `recorded_files`：job_id、room_id、本地绝对路径、大小、格式、分段序号、时长、创建时间、可选 checksum。
-- `upload_records`：recorded_file_id、本地文件 identity、YouTube video id、标题、隐私状态、状态、失败原因、重试次数、上传配置版本。
+- `download_watch_records`：监控来源目录、文件 identity、稳定检测状态、编码状态、登记时间、错误信息。
+- `douyin_collection_tasks`：任务类型(single/user_batch)、输入 URL、状态、max_items、进度、错误信息、创建/结束时间。
+- `douyin_downloaded_items`：task_id、aweme_id、作者、描述、本地文件路径、来源 URL、下载状态、错误信息。
+- `upload_records`：recorded_file_id 或 downloaded_item_id、本地文件 identity、YouTube video id、标题、隐私状态、状态、失败原因、重试次数、上传配置版本。
 - `youtube_metrics`：video id、日期、播放量、点赞数、评论数、拉取时间。
-- `settings`：全局录制设置和上传设置。
+- `settings`：全局录制设置、上传设置、下载目录监控设置、Douyin 采集默认设置。
 - `task_commands`：后端发给 worker 的 start/stop/retry 命令及处理结果。
 
 SQLite 约束：
@@ -152,6 +160,12 @@ SQLite 约束：
 - `GET /api/files`：查询录制文件，支持 room/date/status 过滤。
 - `GET /api/uploads`：查询上传记录。
 - `POST /api/uploads/{id}/retry`：对 failed 上传记录重试。
+- `GET /api/download-watch`：查询下载目录监控记录和最近处理结果。
+- `PATCH /api/download-watch/settings`：配置监控目录、轮询间隔、稳定检测次数、是否转 MP4 后上传。
+- `POST /api/douyin/download`：创建单个抖音作品/分享链接采集下载任务。
+- `POST /api/douyin/user-download`：创建抖音用户主页公开视频批量采集下载任务，必须限制 `max_items`。
+- `GET /api/douyin/tasks`：查询 Douyin 采集下载任务列表。
+- `GET /api/douyin/tasks/{id}`：查询单个 Douyin 采集下载任务详情、进度、文件和错误。
 - `GET /api/metrics/videos`：查询 YouTube 基础指标。
 - `GET /api/events/recent`：查询最近事件流，方便排障。
 
@@ -161,6 +175,27 @@ SQLite 约束：
 - 404：资源不存在。
 - 409：状态冲突，例如配置冲突或命令已存在。
 - 500：内部错误，但响应中不包含 token、cookie、client secret。
+
+## Phase 1.5: 下载目录监控与 Douyin 采集下载
+
+下载目录监控：
+
+1. 后端提供 `download_watch_service`，按配置目录轮询扫描视频文件。
+2. 文件必须通过稳定检测：连续多次检查 `size + mtime` 不变且非零大小后才进入处理。
+3. 忽略 `.tmp`、`.part`、`.download`、`.crdownload` 等临时文件。
+4. 对 `.mp4` 直接登记为可上传文件；对 `.ts/.flv/.mkv` 可按配置先转 MP4，再登记生成文件。
+5. 文件 identity 使用规范化路径、大小、mtime 或 checksum，避免重复上传。
+6. 下载目录监控只处理允许目录内文件，不读取任意系统路径。
+
+Douyin 采集下载：
+
+1. 新增独立采集核心模块，例如 `src/douyin_collection.py`，不复制 `erma0/douyin` 的 GPL 代码，只借鉴分层思路。
+2. 支持单作品/分享链接：解析短链跳转，提取 `aweme_id`，获取作品详情，下载视频。
+3. 支持用户主页批量：解析 `sec_user_id`，分页获取公开视频，按 `aweme_id` 去重，并强制 `max_items` 上限。
+4. API 请求支持传入 Cookie 和代理，但 Cookie 不写入默认配置、不入库明文展示、不写日志。
+5. 下载默认落到 `downloads/douyin/{author}/{aweme_id}_{desc}.mp4`，随后进入统一文件登记和上传链路。
+6. 对风控、私密作品、空作品列表、下载地址为空等情况返回明确错误。
+7. 第一版不绕过登录或风控，不做无限批量采集，不保证所有抖音接口长期稳定。
 
 ## Phase 2: 录制引擎适配顺序
 
@@ -180,7 +215,9 @@ SQLite 约束：
 2. 直播间管理：新增、编辑、启用/停用、手动开始/停止录制。
 3. 配置页面：录制格式、保存路径、代理、分段录制、YouTube 上传设置。
 4. 文件与上传记录：查看文件、上传状态、YouTube 链接、失败重试。
-5. 报表页面：按 video_id/date 展示 YouTube 基础指标；主播维度等房间与文件关联稳定后再做。
+5. 下载目录监控：查看最近发现的文件、稳定检测状态、编码状态、上传入队状态和失败原因。
+6. Douyin 采集下载：提交单作品链接或用户主页链接，设置 `max_items`，查看采集进度、下载文件和错误。
+7. 报表页面：按 video_id/date 展示 YouTube 基础指标；主播维度等房间与文件关联稳定后再做。
 
 前端不直接访问本地文件和凭证，只通过后端 API 操作。
 
@@ -192,6 +229,7 @@ SQLite 约束：
 - `upload_records` 对 `recorded_file_id` 或稳定文件 identity 设置唯一约束，避免重复上传。
 - 迁移脚本必须可重复运行；已迁移 JSON 记录要标记来源和迁移时间。
 - 上传前创建记录，上传中更新进度，成功后写入 video id，失败后写入错误和重试次数。
+- 下载目录监控和 Douyin 采集下载产生的 `.mp4` 文件，也通过同一套文件 identity 和 `upload_records` 去重机制进入上传队列。
 - 后台页面支持对 failed 记录手动重试，超过最大重试次数需人工确认。
 
 数据分析：
@@ -204,8 +242,8 @@ SQLite 约束：
 
 - 使用 FastAPI lifespan 启动和停止后台任务。
 - 用数据库租约或进程锁避免开发 reload/重复启动造成多个 scheduler 同时运行。
-- 所有日志和事件记录带 `job_id`、`file_id`、`upload_id`，方便从页面追踪一条录制到上传的完整链路。
-- 后台页面提供最近事件流：任务命令、录制状态、上传状态、指标拉取错误。
+- 所有日志和事件记录带 `job_id`、`file_id`、`upload_id`，Douyin 任务带 `douyin_task_id`、`aweme_id`，方便从页面追踪一条采集/录制到上传的完整链路。
+- 后台页面提供最近事件流：任务命令、录制状态、下载目录监控、Douyin 采集下载、上传状态、指标拉取错误。
 
 ## Path safety
 
@@ -213,6 +251,7 @@ SQLite 约束：
 - 保存到数据库前转为规范化绝对路径。
 - 文件操作必须校验路径位于允许的下载目录或配置目录内。
 - Windows 下要处理盘符、大小写和分隔符差异。
+- Douyin 下载输出目录必须位于允许下载根目录内，用户传入 `output_dir` 时只允许相对路径或经过白名单校验的目录。
 - 禁止 API 读取任意系统文件。
 
 ## Security and privacy
@@ -221,6 +260,7 @@ SQLite 约束：
 - 后台默认只监听 `127.0.0.1`。
 - 如果用户显式开启局域网访问，必须先加入登录认证。
 - API 不返回 Cookie、OAuth token、client secret 的明文。
+- Douyin 采集请求允许临时传入 Cookie，但 Cookie 只用于当前任务，不持久化明文，不进入事件日志。
 - 日志中屏蔽敏感字段。
 
 ## Verification plan
@@ -228,9 +268,11 @@ SQLite 约束：
 自动化测试：
 
 1. pytest：ini 导入、URL 行解析、路径边界校验、状态机迁移、SQLite repository 写入、上传记录迁移幂等性。
-2. API 测试：rooms CRUD、start/stop 幂等性、jobs/files/uploads 查询、retry 行为。
+2. API 测试：rooms CRUD、start/stop 幂等性、jobs/files/uploads 查询、retry 行为、download-watch 设置和查询、Douyin 任务创建和查询。
 3. worker 测试：用短时 mock/fixture 录制命令验证状态事件和文件登记。
-4. 前端冒烟：能打开仪表盘、房间列表、上传记录页。
+4. 下载目录监控测试：慢速写入文件不提前入队，稳定后登记；临时后缀被忽略；重复文件不重复上传。
+5. Douyin 采集测试：单作品链接解析、用户主页分页低限额采集、Cookie 缺失/风控错误提示、下载路径边界校验。
+6. 前端冒烟：能打开仪表盘、房间列表、上传记录页、下载目录监控页、Douyin 采集任务页。
 
 人工端到端验证：
 
@@ -238,10 +280,13 @@ SQLite 约束：
 2. 从现有 ini 导入配置和直播间，前端能看到相同数据。
 3. 在前端新增/停用直播间，确认录制 worker 按预期启动/停止。
 4. 录制短视频，确认 `recorded_files` 和 `upload_records` 生成记录。
-5. 触发 YouTube 上传，确认上传状态从 pending → uploading → uploaded/failed。
-6. 重启后台，确认任务记录、上传记录和配置仍可查询。
-7. 拉取 YouTube 视频基础指标，确认报表页面能按日期和视频展示数据。
-8. 检查敏感信息不会在 API 响应和日志中泄露。
+5. 手动放入一个 `.mp4` 到监控目录，确认稳定检测后生成文件记录并进入上传队列。
+6. 提交一个 Douyin 单作品下载任务，确认任务完成、文件落盘并进入统一文件/上传链路。
+7. 提交一个 Douyin 用户主页批量下载任务，`max_items=3`，确认进度、文件和错误可查询。
+8. 触发 YouTube 上传，确认上传状态从 pending → uploading → uploaded/failed。
+9. 重启后台，确认任务记录、上传记录和配置仍可查询。
+10. 拉取 YouTube 视频基础指标，确认报表页面能按日期和视频展示数据。
+11. 检查敏感信息不会在 API 响应和日志中泄露。
 
 ## Deployment and startup
 
@@ -261,6 +306,9 @@ SQLite 约束：
 - 不做分布式录制节点或多机器协同。
 - 不引入 Redis/Celery/Kubernetes；先用 SQLite + worker 子进程 + 轻量定时任务。
 - 不重写所有平台抓取逻辑；录制核心沿用现有 spider/stream/main.py 能力。
+- 不绕过 Douyin 登录、风控、权限或私密内容限制。
+- 不保证 Douyin Web API 长期稳定；接口变化时需要单独维护采集模块。
+- 不做无限量用户主页采集；第一版必须有 `max_items` 上限。
 </updated-plan>
 
 请继续审查更新后的计划。如果没有新的问题，回复 "LGTM"。

@@ -67,9 +67,9 @@ start_display_time = datetime.datetime.now()
 global_proxy = False
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
-config_file = f'{script_path}/config/config.ini'
-url_config_file = f'{script_path}/config/URL_config.ini'
-backup_dir = f'{script_path}/backup_config'
+config_file = os.environ.get('DOUYIN_RECORDER_CONFIG_FILE', f'{script_path}/config/config.ini')
+url_config_file = os.environ.get('DOUYIN_RECORDER_URL_CONFIG_FILE', f'{script_path}/config/URL_config.ini')
+backup_dir = os.environ.get('DOUYIN_RECORDER_BACKUP_DIR', f'{script_path}/backup_config')
 text_encoding = 'utf-8-sig'
 rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 default_path = f'{script_path}/downloads'
@@ -80,6 +80,9 @@ clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
 youtube_uploader = None
+download_monitor_thread = None
+download_monitor_seen = set()
+download_monitor_lock = threading.Lock()
 
 
 def signal_handler(_signal, _frame):
@@ -99,8 +102,6 @@ def display_info() -> None:
         try:
             sys.stdout.flush()
             time.sleep(5)
-            if Path(sys.executable).name != 'pythonw.exe':
-                os.system(clear_command)
             print(f"\r共监测{monitoring}个直播中", end=" | ")
             print(f"同一时间访问网络的线程数: {max_request}", end=" | ")
             print(f"是否开启代理录制: {'是' if use_proxy else '否'}", end=" | ")
@@ -389,6 +390,116 @@ def enqueue_youtube_uploads(file_paths: list[str], record_name: str) -> None:
         logger.warning(f"未找到可加入YouTube上传队列的录制文件: {record_name}")
     for file_path in file_paths:
         enqueue_youtube_upload(file_path, record_name)
+
+
+def resolve_project_path(file_path: str) -> str:
+    path = Path(file_path).expanduser()
+    if not path.is_absolute():
+        path = Path(script_path) / path
+    return str(path.resolve())
+
+
+def get_download_monitor_root(monitor_path: str, video_save_path: str) -> Path:
+    root = monitor_path.strip() or video_save_path.strip() or default_path
+    path = Path(root).expanduser()
+    if not path.is_absolute():
+        path = Path(script_path) / path
+    return path.resolve()
+
+
+def is_download_monitor_candidate(file_path: Path, allowed_extensions: set[str], convert_to_mp4: bool) -> bool:
+    ignored_suffixes = {'.part', '.tmp', '.download', '.crdownload'}
+    if not file_path.is_file() or file_path.suffix.lower() in ignored_suffixes:
+        return False
+    if file_path.stat().st_size <= 0:
+        return False
+    suffix = file_path.suffix.lower().lstrip('.')
+    if suffix in allowed_extensions:
+        return True
+    return convert_to_mp4 and suffix in {'flv', 'mkv', 'ts'}
+
+
+def is_file_stable(file_path: Path, checks: int, interval: int) -> bool:
+    previous_stat = None
+    for _ in range(max(1, checks)):
+        if exit_recording or not file_path.exists() or not file_path.is_file():
+            return False
+        current_stat = file_path.stat()
+        if current_stat.st_size <= 0:
+            return False
+        current_state = (current_stat.st_size, int(current_stat.st_mtime))
+        if previous_stat and current_state != previous_stat:
+            return False
+        previous_stat = current_state
+        time.sleep(max(1, interval))
+    return True
+
+
+def handle_download_monitor_file(file_path: Path, stable_checks: int, stable_interval: int,
+                                 convert_to_mp4: bool) -> None:
+    try:
+        if not is_file_stable(file_path, stable_checks, stable_interval):
+            with download_monitor_lock:
+                download_monitor_seen.discard(str(file_path))
+            return
+        suffix = file_path.suffix.lower().lstrip('.')
+        if convert_to_mp4 and suffix != 'mp4':
+            logger.debug(f"下载目录监控发现视频文件，开始转为MP4: {file_path}")
+            converts_mp4(str(file_path), delete_origin_file)
+            return
+        enqueue_youtube_upload(str(file_path), file_path.stem)
+    except Exception as e:
+        logger.error(f"下载目录监控处理文件失败: {file_path}, {e}")
+        with download_monitor_lock:
+            download_monitor_seen.discard(str(file_path))
+
+
+def download_monitor_loop(root: Path, allowed_extensions: set[str], poll_interval: int,
+                          stable_checks: int, stable_interval: int, convert_to_mp4: bool) -> None:
+    logger.debug(f"下载目录实时监控已启动: {root}")
+    while not exit_recording:
+        try:
+            if root.exists():
+                for file_path in root.rglob('*'):
+                    if not is_download_monitor_candidate(file_path, allowed_extensions, convert_to_mp4):
+                        continue
+                    key = str(file_path.resolve())
+                    with download_monitor_lock:
+                        if key in download_monitor_seen:
+                            continue
+                        download_monitor_seen.add(key)
+                    threading.Thread(
+                        target=handle_download_monitor_file,
+                        args=(file_path.resolve(), stable_checks, stable_interval, convert_to_mp4),
+                        daemon=True,
+                    ).start()
+            else:
+                logger.warning(f"下载目录实时监控路径不存在: {root}")
+        except Exception as e:
+            logger.error(f"下载目录实时监控扫描失败: {e}")
+        time.sleep(max(1, poll_interval))
+
+
+def start_download_monitor_thread(root: Path, allowed_extensions: set[str], poll_interval: int,
+                                  stable_checks: int, stable_interval: int, convert_to_mp4: bool) -> None:
+    global download_monitor_thread
+    if download_monitor_thread and download_monitor_thread.is_alive():
+        return
+    download_monitor_thread = threading.Thread(
+        target=download_monitor_loop,
+        args=(root, allowed_extensions, poll_interval, stable_checks, stable_interval, convert_to_mp4),
+        daemon=True,
+    )
+    download_monitor_thread.start()
+
+
+def check_youtube_client_secret(client_secret_file: str) -> bool:
+    client_secret_path = Path(client_secret_file)
+    if client_secret_path.exists() and client_secret_path.is_file():
+        return True
+    logger.error(f"YouTube客户端密钥文件不存在: {client_secret_path}")
+    logger.error("请先在配置文件中设置 YouTube客户端密钥文件路径，或将文件放到 config/youtube_client_secret.json")
+    return False
 
 
 def get_completed_record_files(save_file_path: str) -> list[str]:
@@ -1882,13 +1993,13 @@ while True:
 
     youtube_upload_enabled = options.get(read_config_value(config, 'YouTube上传', '是否启用YouTube上传(是/否)', "否"), False)
     youtube_client_secret_file = read_config_value(
-        config, 'YouTube上传', 'YouTube客户端密钥文件路径', f'{script_path}/config/youtube_client_secret.json'
+        config, 'YouTube上传', 'YouTube客户端密钥文件路径', 'config/youtube_client_secret.json'
     )
     youtube_token_file = read_config_value(
-        config, 'YouTube上传', 'YouTube令牌文件路径', f'{script_path}/config/youtube_token.json'
+        config, 'YouTube上传', 'YouTube令牌文件路径', 'config/youtube_token.json'
     )
     youtube_upload_state_file = read_config_value(
-        config, 'YouTube上传', 'YouTube上传状态文件路径', f'{script_path}/config/youtube_upload_state.json'
+        config, 'YouTube上传', 'YouTube上传状态文件路径', 'config/youtube_upload_state.json'
     )
     youtube_privacy_status = read_config_value(
         config, 'YouTube上传', 'YouTube隐私状态(public|unlisted|private)', "public"
@@ -1900,6 +2011,35 @@ while True:
     youtube_allowed_extensions = read_config_value(
         config, 'YouTube上传', 'YouTube上传文件扩展名(逗号分隔)', "mp4,mkv,flv,ts"
     )
+    download_monitor_enabled = options.get(
+        read_config_value(config, 'YouTube上传', '是否启用下载目录实时监控(是/否)', "否"), False
+    )
+    download_monitor_path = read_config_value(
+        config, 'YouTube上传', '下载目录实时监控路径(不填则使用直播保存路径)', ""
+    )
+    download_monitor_poll_interval = int(read_config_value(
+        config, 'YouTube上传', '下载目录实时监控轮询间隔(秒)', 5
+    ))
+    download_monitor_stable_checks = int(read_config_value(
+        config, 'YouTube上传', '下载目录文件稳定检测次数', 3
+    ))
+    download_monitor_stable_interval = int(read_config_value(
+        config, 'YouTube上传', '下载目录文件稳定检测间隔(秒)', 5
+    ))
+    download_monitor_convert_to_mp4 = options.get(read_config_value(
+        config, 'YouTube上传', '下载目录监控发现非mp4时是否转为mp4后上传(是/否)',
+        "是" if converts_to_mp4 else "否"
+    ), converts_to_mp4)
+    youtube_upload_allowed_extensions = {
+        ext.strip().lower().lstrip('.')
+        for ext in youtube_allowed_extensions.replace('，', ',').split(',')
+        if ext.strip()
+    }
+    youtube_client_secret_file = resolve_project_path(youtube_client_secret_file)
+    youtube_token_file = resolve_project_path(youtube_token_file)
+    youtube_upload_state_file = resolve_project_path(youtube_upload_state_file)
+    if youtube_upload_enabled and not check_youtube_client_secret(youtube_client_secret_file):
+        youtube_upload_enabled = False
     youtube_uploader_config = YouTubeUploadConfig(
         enabled=youtube_upload_enabled,
         client_secret_file=youtube_client_secret_file,
@@ -1910,14 +2050,19 @@ while True:
         description=youtube_description,
         tags=[tag.strip() for tag in youtube_tags.replace('，', ',').split(',') if tag.strip()],
         category_id=youtube_category_id,
-        allowed_extensions={
-            ext.strip().lower().lstrip('.')
-            for ext in youtube_allowed_extensions.replace('，', ',').split(',')
-            if ext.strip()
-        },
+        allowed_extensions=youtube_upload_allowed_extensions,
     )
     if youtube_upload_enabled and youtube_uploader is None:
         youtube_uploader = create_youtube_uploader(youtube_uploader_config)
+    if youtube_uploader and download_monitor_enabled:
+        start_download_monitor_thread(
+            get_download_monitor_root(download_monitor_path, video_save_path),
+            youtube_upload_allowed_extensions,
+            download_monitor_poll_interval,
+            download_monitor_stable_checks,
+            download_monitor_stable_interval,
+            download_monitor_convert_to_mp4,
+        )
 
     live_status_push = read_config_value(config, '推送配置', '直播状态推送渠道', "")
     dingtalk_api_url = read_config_value(config, '推送配置', '钉钉推送接口链接', "")
@@ -2240,6 +2385,6 @@ while True:
 
     time.sleep(3)
 
-if youtube_uploader:
+if youtube_uploader and not exit_recording:
     logger.debug("等待YouTube上传队列完成...")
     youtube_uploader.wait_for_uploads()
