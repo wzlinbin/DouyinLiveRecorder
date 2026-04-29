@@ -31,6 +31,7 @@ from src import spider, stream
 from src.proxy import ProxyDetector
 from src.utils import logger
 from src import utils
+from src.youtube_uploader import YouTubeUploadConfig, create_youtube_uploader
 from msg_push import (
     dingtalk, xizhi, tg_bot, send_email, bark, ntfy, pushplus
 )
@@ -78,12 +79,16 @@ os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
+youtube_uploader = None
 
 
 def signal_handler(_signal, _frame):
-    sys.exit(0)
+    global exit_recording
+    exit_recording = True
+    color_obj.print_colored("正在停止录制并保存文件，请等待...", color_obj.YELLOW)
 
 
+signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
@@ -373,6 +378,31 @@ def run_script(command: str) -> None:
         logger.error('Please add `#!/bin/bash` at the beginning of your bash script file.')
 
 
+def enqueue_youtube_upload(file_path: str, record_name: str) -> None:
+    if youtube_uploader:
+        logger.debug(f"加入YouTube上传队列: {file_path}")
+        youtube_uploader.enqueue_upload(file_path, record_name)
+
+
+def enqueue_youtube_uploads(file_paths: list[str], record_name: str) -> None:
+    if youtube_uploader and not file_paths:
+        logger.warning(f"未找到可加入YouTube上传队列的录制文件: {record_name}")
+    for file_path in file_paths:
+        enqueue_youtube_upload(file_path, record_name)
+
+
+def get_completed_record_files(save_file_path: str) -> list[str]:
+    if split_video_by_time:
+        file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
+        filename_template = os.path.basename(save_file_path)
+        if '%' in filename_template:
+            prefix = filename_template.split('%', maxsplit=1)[0]
+        else:
+            prefix = filename_template.rsplit('_', maxsplit=1)[0]
+        return [path for path in file_paths if os.path.basename(path).startswith(prefix)]
+    return [save_file_path]
+
+
 def clear_record_info(record_name: str, record_url: str) -> None:
     global monitoring
     recording.discard(record_name)
@@ -404,8 +434,9 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
                 for chunk in response.iter_bytes(chunk_size):
                     if live_url in url_comments or exit_recording:
                         color_obj.print_colored(f"[{record_name}]录制时已被注释或请求停止,下载中断", color_obj.YELLOW)
-                        clear_record_info(record_name, live_url)
-                        return False
+                        if not exit_recording:
+                            clear_record_info(record_name, live_url)
+                        return exit_recording
 
                     if chunk:
                         f.write(chunk)
@@ -436,7 +467,6 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     while process.poll() is None:
         if record_url in url_comments or exit_recording:
             color_obj.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", color_obj.YELLOW)
-            clear_record_info(record_name, record_url)
             # process.terminate()
             if os.name == 'nt':
                 if process.stdin:
@@ -445,22 +475,30 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             else:
                 process.send_signal(signal.SIGINT)
             process.wait()
+            completed_file_paths = get_completed_record_files(save_file_path)
+            enqueue_youtube_uploads(completed_file_paths, record_name)
+            recording.discard(record_name)
             return True
         time.sleep(1)
 
     return_code = process.returncode
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
-    if return_code == 0:
-        if converts_to_mp4 and save_type == 'TS':
+    completed_file_paths = get_completed_record_files(save_file_path)
+    should_finalize_recording = return_code == 0 or (exit_recording and completed_file_paths)
+    if should_finalize_recording:
+        enqueue_youtube_uploads(completed_file_paths, record_name)
+
+        if return_code != 0:
+            color_obj.print_colored(f"\n{record_name} {stop_time} 录制已停止, 已保存文件并加入上传队列\n", color_obj.YELLOW)
+
+        if return_code == 0 and converts_to_mp4 and save_type == 'TS':
             if split_video_by_time:
-                file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
-                for path in file_paths:
-                    if prefix in path:
-                        threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
+                for path in completed_file_paths:
+                    threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
             else:
                 threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file)).start()
-        print(f"\n{record_name} {stop_time} 直播录制完成\n")
+        if return_code == 0:
+            print(f"\n{record_name} {stop_time} 直播录制完成\n")
 
         if script_command:
             logger.debug("开始执行脚本命令!")
@@ -1333,6 +1371,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                             if download_success:
                                                 record_finished = True
+                                                enqueue_youtube_upload(save_file_path, record_name)
                                                 print(
                                                     f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制完成\n")
 
@@ -1743,6 +1782,8 @@ def read_config_value(config_parser: configparser.RawConfigParser, section: str,
             config_parser.add_section('Authorization')
         if '账号密码' not in config_parser.sections():
             config_parser.add_section('账号密码')
+        if 'YouTube上传' not in config_parser.sections():
+            config_parser.add_section('YouTube上传')
         return config_parser.get(section, option)
     except (configparser.NoSectionError, configparser.NoOptionError):
         config_parser.set(section, option, str(default_value))
@@ -1781,6 +1822,11 @@ except Exception as err:
     print("An unexpected error occurred:", err)
 
 while True:
+    if exit_recording:
+        if not recording:
+            break
+        time.sleep(1)
+        continue
 
     try:
         if not os.path.isfile(config_file):
@@ -1833,6 +1879,46 @@ while True:
     enable_proxy_platform_list = enable_proxy_platform.replace('，', ',').split(',') if enable_proxy_platform else None
     extra_enable_proxy = read_config_value(config, '录制设置', '额外使用代理录制的平台(逗号分隔)', '')
     extra_enable_proxy_platform_list = extra_enable_proxy.replace('，', ',').split(',') if extra_enable_proxy else None
+
+    youtube_upload_enabled = options.get(read_config_value(config, 'YouTube上传', '是否启用YouTube上传(是/否)', "否"), False)
+    youtube_client_secret_file = read_config_value(
+        config, 'YouTube上传', 'YouTube客户端密钥文件路径', f'{script_path}/config/youtube_client_secret.json'
+    )
+    youtube_token_file = read_config_value(
+        config, 'YouTube上传', 'YouTube令牌文件路径', f'{script_path}/config/youtube_token.json'
+    )
+    youtube_upload_state_file = read_config_value(
+        config, 'YouTube上传', 'YouTube上传状态文件路径', f'{script_path}/config/youtube_upload_state.json'
+    )
+    youtube_privacy_status = read_config_value(
+        config, 'YouTube上传', 'YouTube隐私状态(public|unlisted|private)', "public"
+    )
+    youtube_title_template = read_config_value(config, 'YouTube上传', 'YouTube视频标题模板', "{record_name}")
+    youtube_description = read_config_value(config, 'YouTube上传', 'YouTube视频描述', "")
+    youtube_tags = read_config_value(config, 'YouTube上传', 'YouTube视频标签(逗号分隔)', "")
+    youtube_category_id = read_config_value(config, 'YouTube上传', 'YouTube视频分类ID', "22")
+    youtube_allowed_extensions = read_config_value(
+        config, 'YouTube上传', 'YouTube上传文件扩展名(逗号分隔)', "mp4,mkv,flv,ts"
+    )
+    youtube_uploader_config = YouTubeUploadConfig(
+        enabled=youtube_upload_enabled,
+        client_secret_file=youtube_client_secret_file,
+        token_file=youtube_token_file,
+        state_file=youtube_upload_state_file,
+        privacy_status=youtube_privacy_status if youtube_privacy_status in {"public", "unlisted", "private"} else "public",
+        title_template=youtube_title_template,
+        description=youtube_description,
+        tags=[tag.strip() for tag in youtube_tags.replace('，', ',').split(',') if tag.strip()],
+        category_id=youtube_category_id,
+        allowed_extensions={
+            ext.strip().lower().lstrip('.')
+            for ext in youtube_allowed_extensions.replace('，', ',').split(',')
+            if ext.strip()
+        },
+    )
+    if youtube_upload_enabled and youtube_uploader is None:
+        youtube_uploader = create_youtube_uploader(youtube_uploader_config)
+
     live_status_push = read_config_value(config, '推送配置', '直播状态推送渠道', "")
     dingtalk_api_url = read_config_value(config, '推送配置', '钉钉推送接口链接', "")
     xizhi_api_url = read_config_value(config, '推送配置', '微信推送接口链接', "")
@@ -2153,3 +2239,7 @@ while True:
         first_run = False
 
     time.sleep(3)
+
+if youtube_uploader:
+    logger.debug("等待YouTube上传队列完成...")
+    youtube_uploader.wait_for_uploads()
