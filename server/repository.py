@@ -25,6 +25,14 @@ class Repository:
         with self.database.connection() as connection:
             return [row_to_dict(row) for row in connection.execute(sql, params).fetchall()]
 
+    def count_rows(self, table: str, where: str = "", params: tuple[Any, ...] = ()) -> int:
+        sql = f"SELECT COUNT(*) AS total FROM {table}"
+        if where:
+            sql += f" WHERE {where}"
+        with self.database.connection() as connection:
+            row = connection.execute(sql, params).fetchone()
+            return int(row["total"]) if row else 0
+
     def get_row(self, table: str, row_id: int) -> dict[str, Any] | None:
         with self.database.connection() as connection:
             row = connection.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()

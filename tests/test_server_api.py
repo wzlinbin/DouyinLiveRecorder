@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from server.app import app, config_service
+from server.app import app, config_service, repository
 from server.recorder_process_service import PROJECT_ROOT
 
 
@@ -83,6 +83,76 @@ class ServerApiTest(unittest.TestCase):
             response = client.post("/api/metrics/videos/refresh", headers={"X-Admin-Token": "test-token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["requested"], 0)
+
+    def test_dashboard_contains_summary_and_rooms(self) -> None:
+        room_url = "https://live.douyin.com/unittest-dashboard"
+        with TestClient(app) as client:
+            client.post(
+                "/api/rooms",
+                headers={"X-Admin-Token": "test-token"},
+                json={"url": room_url, "name": "dashboard-room"},
+            )
+            response = client.get("/api/dashboard")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("summary", payload)
+        self.assertIn("rooms", payload)
+        self.assertIn("active_jobs", payload)
+        self.assertIn("recent_events", payload)
+        self.assertTrue(any(room["url"] == room_url for room in payload["rooms"]))
+
+    def test_index_page_contains_admin_sections(self) -> None:
+        with TestClient(app) as client:
+            response = client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("后台管理", response.text)
+        self.assertIn("/api/dashboard", response.text)
+        self.assertIn("直播间管理", response.text)
+        self.assertIn('data-action="edit-room"', response.text)
+        self.assertIn('data-action="retry-upload"', response.text)
+
+    def test_room_patch_updates_name_and_quality(self) -> None:
+        room_url = "https://live.douyin.com/unittest-edit"
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/rooms",
+                headers={"X-Admin-Token": "test-token"},
+                json={"url": room_url, "name": "before", "quality": "高清"},
+            ).json()
+            response = client.patch(
+                f"/api/rooms/{created['id']}",
+                headers={"X-Admin-Token": "test-token"},
+                json={"name": "after", "quality": "蓝光"},
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["name"], "after")
+        self.assertEqual(payload["quality"], "蓝光")
+        self.assertEqual(payload["url"], room_url)
+
+    def test_retry_failed_upload_marks_pending(self) -> None:
+        video_path = PROJECT_ROOT / "downloads" / "unittest-retry.mp4"
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        video_path.write_bytes(b"fake-video")
+        try:
+            recorded = repository.register_file(video_path, source="unittest")
+            upload = next(
+                item
+                for item in repository.list_rows("upload_records")
+                if item.get("recorded_file_id") == recorded["id"]
+            )
+            repository.mark_upload_failed(upload["id"], "temporary failure")
+            with TestClient(app) as client:
+                response = client.post(
+                    f"/api/uploads/{upload['id']}/retry",
+                    headers={"X-Admin-Token": "test-token"},
+                )
+                marked = client.get("/api/uploads", params={"status": "pending"}).json()["data"]
+        finally:
+            video_path.unlink(missing_ok=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pending")
+        self.assertTrue(any(item["id"] == upload["id"] for item in marked))
 
     def test_config_export_to_temp_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
