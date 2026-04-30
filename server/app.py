@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -23,9 +24,12 @@ from .schemas import (
     DouyinSingleRequest,
     DouyinUserRequest,
     DownloadWatchSettingsPatch,
+    RecordedFileRenameRequest,
+    RecordedFileTranscodeRequest,
     RoomCreate,
     RoomPatch,
 )
+from .path_service import ensure_allowed_path
 from .transcode_service import TranscodeService
 from .upload_service import UploadService
 
@@ -77,7 +81,7 @@ def require_admin_token(x_admin_token: str | None = Header(default=None)) -> Non
 def build_dashboard_data() -> dict[str, Any]:
     active_statuses = ("pending", "probing", "recording", "stopping")
     active_placeholders = ",".join("?" for _ in active_statuses)
-    rooms = repository.list_rows("rooms", order_by="id ASC")
+    rooms = repository.list_rooms()
     latest_jobs = repository.list_rows("recording_jobs", order_by="id DESC", limit=200)
     active_jobs = repository.list_rows(
         "recording_jobs",
@@ -951,7 +955,7 @@ def export_config() -> dict[str, int]:
 
 @app.get("/api/rooms")
 def list_rooms() -> dict[str, list[dict]]:
-    return {"data": repository.list_rows("rooms", order_by="id ASC")}
+    return {"data": repository.list_rooms()}
 
 
 @app.post("/api/rooms", dependencies=[Depends(require_admin_token)])
@@ -965,10 +969,25 @@ def update_room(room_id: int, request: RoomPatch) -> dict:
     data = request.model_dump(exclude_unset=True)
     if data.get("url") and not data.get("platform"):
         data["platform"] = guess_platform(data["url"])
-    room = repository.update_room(room_id, data)
+    try:
+        room = repository.update_room(room_id, data)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
     return room
+
+
+@app.delete("/api/rooms/{room_id}", dependencies=[Depends(require_admin_token)])
+def delete_room(room_id: int) -> dict[str, bool]:
+    try:
+        room = repository.delete_room(room_id)
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    repository.add_event("room_deleted", f"Room {room_id} deleted", level="warning")
+    return {"deleted": True}
 
 
 @app.post("/api/rooms/{room_id}/start", dependencies=[Depends(require_admin_token)])
@@ -1026,6 +1045,71 @@ def list_files(
         clauses.append("created_at <= ?")
         params.append(date_to)
     return {"data": repository.list_rows("recorded_files", where=" AND ".join(clauses), params=tuple(params))}
+
+
+def get_recorded_file_or_404(file_id: int) -> dict:
+    recorded = repository.get_row("recorded_files", file_id)
+    if not recorded:
+        raise HTTPException(status_code=404, detail="Recorded file not found")
+    return recorded
+
+
+@app.post("/api/files/{file_id}/transcode", dependencies=[Depends(require_admin_token)])
+def transcode_file(file_id: int, request: RecordedFileTranscodeRequest) -> dict:
+    recorded = get_recorded_file_or_404(file_id)
+    source_path = ensure_allowed_path(recorded["local_path"])
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Source file is missing")
+    repository.update_recorded_file_path(file_id, source_path)
+    try:
+        target_path = transcode_service.transcode_to_mp4(
+            source_path,
+            delete_origin=request.delete_origin,
+            reencode_h264=request.reencode_h264,
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    return repository.register_file(
+        target_path,
+        source="transcode",
+        job_id=recorded.get("job_id"),
+        room_id=recorded.get("room_id"),
+    )
+
+
+@app.patch("/api/files/{file_id}/rename", dependencies=[Depends(require_admin_token)])
+def rename_file(file_id: int, request: RecordedFileRenameRequest) -> dict:
+    recorded = get_recorded_file_or_404(file_id)
+    source_path = ensure_allowed_path(recorded["local_path"])
+    if not source_path.exists() or not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Source file is missing")
+    filename = request.filename.strip()
+    if not filename or Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="Filename must not include path separators")
+    target_path = ensure_allowed_path(source_path.parent / filename)
+    if target_path.parent != source_path.parent:
+        raise HTTPException(status_code=400, detail="Target must stay in the source directory")
+    if target_path.exists():
+        raise HTTPException(status_code=409, detail="Target file already exists")
+    source_path.rename(target_path)
+    try:
+        updated = repository.update_recorded_file_path(file_id, target_path)
+    except ValueError as error:
+        target_path.rename(source_path)
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    repository.add_event("file_renamed", f"Renamed {source_path.name} to {target_path.name}", file_id=file_id)
+    return updated or get_recorded_file_or_404(file_id)
+
+
+@app.delete("/api/files/{file_id}", dependencies=[Depends(require_admin_token)])
+def delete_file(file_id: int) -> dict[str, bool]:
+    recorded = get_recorded_file_or_404(file_id)
+    source_path = ensure_allowed_path(recorded["local_path"])
+    if source_path.exists() and source_path.is_file():
+        source_path.unlink()
+    deleted = repository.delete_recorded_file(file_id)
+    repository.add_event("file_deleted", f"Deleted {source_path.name}", level="warning", file_id=file_id)
+    return {"deleted": deleted}
 
 
 @app.get("/api/uploads")

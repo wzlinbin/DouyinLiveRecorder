@@ -35,6 +35,15 @@ class DownloadWatchSettingsPatch(BaseModel):
     reencode_h264: bool | None = None
 
 
+class RecordedFileRenameRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+
+
+class RecordedFileTranscodeRequest(BaseModel):
+    delete_origin: bool = False
+    reencode_h264: bool = False
+
+
 class DouyinSingleRequest(BaseModel):
     url: str
     output_dir: str | None = None

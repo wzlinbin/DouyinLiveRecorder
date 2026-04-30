@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,10 @@ class Repository:
         with self.database.connection() as connection:
             row = connection.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
             return row_to_dict(row) if row else None
+
+    def list_rooms(self, include_deleted: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_deleted else "deleted_at IS NULL"
+        return self.list_rows("rooms", where=where, order_by="id ASC")
 
     def add_event(self, event_type: str, message: str, level: str = "info", **ids: int | None) -> None:
         allowed_ids = {key: value for key, value in ids.items() if key in {
@@ -91,7 +96,7 @@ class Repository:
                 VALUES(?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(url) DO UPDATE SET name = CASE WHEN excluded.name != '' THEN excluded.name ELSE rooms.name END,
                     platform = excluded.platform, quality = excluded.quality, enabled = excluded.enabled,
-                    source = excluded.source, updated_at = CURRENT_TIMESTAMP
+                    source = excluded.source, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
                 """,
                 (url, name, platform, quality, int(enabled), source),
             )
@@ -102,17 +107,52 @@ class Repository:
         fields = {key: value for key, value in updates.items() if key in {"url", "name", "platform", "quality", "enabled"}}
         if not fields:
             return self.get_row("rooms", room_id)
+        if "url" in fields:
+            fields["url"] = str(fields["url"]).strip()
+            if not fields["url"]:
+                raise ValueError("Room URL cannot be empty")
         if "enabled" in fields:
             fields["enabled"] = int(bool(fields["enabled"]))
         assignments = ", ".join(f"{key} = ?" for key in fields)
         values = tuple(fields.values())
         with self.database.transaction() as connection:
+            if "url" in fields:
+                existing = connection.execute(
+                    "SELECT id FROM rooms WHERE url = ? AND id != ? AND deleted_at IS NULL",
+                    (fields["url"], room_id),
+                ).fetchone()
+                if existing:
+                    raise ValueError("Room URL already exists")
             connection.execute(
-                f"UPDATE rooms SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                f"UPDATE rooms SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
                 (*values, room_id),
             )
-            row = connection.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            row = connection.execute("SELECT * FROM rooms WHERE id = ? AND deleted_at IS NULL", (room_id,)).fetchone()
             return row_to_dict(row) if row else None
+
+    def delete_room(self, room_id: int) -> dict[str, Any] | None:
+        with self.database.transaction() as connection:
+            row = connection.execute("SELECT * FROM rooms WHERE id = ? AND deleted_at IS NULL", (room_id,)).fetchone()
+            if not row:
+                return None
+            active = connection.execute(
+                "SELECT id FROM recording_jobs WHERE room_id = ? AND status IN ('pending','probing','recording','stopping') LIMIT 1",
+                (room_id,),
+            ).fetchone()
+            if active:
+                raise RuntimeError("Room has an active recording job")
+            deleted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            archived_url = f"{row['url']}#deleted-{room_id}-{deleted_at}"
+            connection.execute(
+                """
+                UPDATE rooms
+                SET enabled = 0, url = ?, deleted_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (archived_url, deleted_at, room_id),
+            )
+            updated = connection.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            return row_to_dict(updated) if updated else None
 
     def active_job_for_room(self, room_id: int) -> dict[str, Any] | None:
         placeholders = ",".join("?" for _ in ACTIVE_JOB_STATES)
@@ -201,6 +241,65 @@ class Repository:
                     (recorded["id"], downloaded_item_id, identity, public_path(file_path), file_path.stem),
                 )
             return row_to_dict(recorded)
+
+    def update_recorded_file_path(self, file_id: int, path: str | Path) -> dict[str, Any] | None:
+        file_path = Path(path).resolve()
+        identity = file_identity(file_path)
+        stat = file_path.stat()
+        suffix = file_path.suffix.lstrip(".").lower()
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT id FROM recorded_files WHERE file_identity = ? AND id != ?",
+                (identity, file_id),
+            ).fetchone()
+            if existing:
+                raise ValueError("A recorded file with the same identity already exists")
+            connection.execute(
+                """
+                UPDATE recorded_files
+                SET local_path = ?, file_identity = ?, size_bytes = ?, format = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (public_path(file_path), identity, stat.st_size, suffix, file_id),
+            )
+            connection.execute(
+                """
+                UPDATE upload_records
+                SET local_path = ?, file_identity = ?, title = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE recorded_file_id = ?
+                """,
+                (public_path(file_path), identity, file_path.stem, file_id),
+            )
+            connection.execute(
+                """
+                UPDATE douyin_downloaded_items
+                SET local_path = CASE WHEN local_path != '' THEN ? ELSE local_path END,
+                    file_identity = CASE WHEN file_identity != '' THEN ? ELSE file_identity END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE recorded_file_id = ?
+                """,
+                (public_path(file_path), identity, file_id),
+            )
+            row = connection.execute("SELECT * FROM recorded_files WHERE id = ?", (file_id,)).fetchone()
+            return row_to_dict(row) if row else None
+
+    def delete_recorded_file(self, file_id: int) -> bool:
+        with self.database.transaction() as connection:
+            row = connection.execute("SELECT id FROM recorded_files WHERE id = ?", (file_id,)).fetchone()
+            if not row:
+                return False
+            connection.execute("DELETE FROM upload_records WHERE recorded_file_id = ?", (file_id,))
+            connection.execute(
+                """
+                UPDATE douyin_downloaded_items
+                SET recorded_file_id = NULL, file_identity = '', local_path = '', updated_at = CURRENT_TIMESTAMP
+                WHERE recorded_file_id = ?
+                """,
+                (file_id,),
+            )
+            connection.execute("UPDATE download_watch_records SET recorded_file_id = NULL WHERE recorded_file_id = ?", (file_id,))
+            connection.execute("DELETE FROM recorded_files WHERE id = ?", (file_id,))
+            return True
 
     def retry_upload(self, upload_id: int) -> dict[str, Any] | None:
         with self.database.transaction() as connection:

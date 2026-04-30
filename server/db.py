@@ -33,6 +33,13 @@ class Database:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = NORMAL")
             connection.executescript(SCHEMA)
+            self._ensure_schema_updates(connection)
+
+    @staticmethod
+    def _ensure_schema_updates(connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(rooms)").fetchall()}
+        if "deleted_at" not in columns:
+            connection.execute("ALTER TABLE rooms ADD COLUMN deleted_at TEXT")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:

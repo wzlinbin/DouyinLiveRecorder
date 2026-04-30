@@ -430,6 +430,53 @@ uv run main.py
 其中Linux系统请使用`python3 main.py` 运行。
 
 &emsp;
+
+## 🧭后台管理控制台
+
+本仓库包含一个前后端分离的后台管理界面，用于管理直播间、录制任务、文件、上传队列、Douyin 下载、下载监控和配置项。
+
+### 后端 API
+
+后台写操作需要配置管理员 Token：
+
+```powershell
+$env:ADMIN_API_TOKEN="dev-token"
+python -m server
+```
+
+默认监听 `http://127.0.0.1:8000`。页面中的写操作会通过 `X-Admin-Token` 请求头鉴权；本地调试时，在前端右上角输入同一个 Token 并点击“保存”。
+
+### 前端 UI
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+默认访问 `http://127.0.0.1:3000`，Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
+
+已实现能力：
+
+- 仪表盘：系统指标、最近 50 条事件、快捷操作入口。
+- 直播间管理：新增、编辑、启用/禁用、开始/停止录制、删除直播间；修改链接时会校验重复 URL。
+- 录制任务：进行中/已完成/失败 Tab、详情抽屉、配置快照、关联文件。
+- 文件管理：列表筛选、文件预览、转码、重命名、删除、批量删除。
+- 转码与上传：上传队列、失败重试、上传详情、YouTube 指标趋势。
+- Douyin 下载：单视频/用户批量下载任务创建和进度追踪。
+- 下载监控：目录、轮询、稳定性检查和转码设置，支持立即扫描。
+- 设置：配置分段编辑、导入、导出。
+
+常用验证命令：
+
+```powershell
+python -m unittest tests.test_server_api
+cd frontend
+npm run build
+npm audit --omit=dev
+```
+
+&emsp;
 ## 🐋容器运行
 
 在运行命令之前，请确保您的机器上安装了 [Docker](https://docs.docker.com/get-docker/) 和 [Docker Compose](https://docs.docker.com/compose/install/) 
