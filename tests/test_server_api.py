@@ -185,19 +185,22 @@ class ServerApiTest(unittest.TestCase):
 
         class FakeFlow:
             fetched_code = ""
+            completed_code_verifier = ""
 
-            def __init__(self) -> None:
+            def __init__(self, code_verifier: str | None = None) -> None:
                 self.credentials = FakeCredentials()
+                self.code_verifier = code_verifier or "test-code-verifier"
 
             @classmethod
-            def from_client_secrets_file(cls, client_secrets_file, scopes, redirect_uri=None):
-                return cls()
+            def from_client_secrets_file(cls, client_secrets_file, scopes, redirect_uri=None, code_verifier=None):
+                return cls(code_verifier)
 
             def authorization_url(self, access_type=None, include_granted_scopes=None, prompt=None, state=None):
                 return f"https://accounts.google.com/o/oauth2/auth?state={state}", state
 
             def fetch_token(self, code):
                 FakeFlow.fetched_code = code
+                FakeFlow.completed_code_verifier = self.code_verifier
 
         with patch("server.youtube_oauth_service.InstalledAppFlow", FakeFlow):
             with TestClient(app) as client:
@@ -217,6 +220,7 @@ class ServerApiTest(unittest.TestCase):
         self.assertTrue(response.json()["saved"])
         self.assertTrue(token_file.exists())
         self.assertEqual(FakeFlow.fetched_code, "test-code")
+        self.assertEqual(FakeFlow.completed_code_verifier, "test-code-verifier")
 
     def test_youtube_data_api_check_requires_reauthorization_for_old_scope_token(self) -> None:
         client_secret = Path(self.temp_db_dir.name) / "youtube_client_secret.json"

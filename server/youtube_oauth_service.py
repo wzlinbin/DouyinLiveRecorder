@@ -11,6 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from oauthlib.oauth2 import OAuth2Error
 
 from src.youtube_uploader import YOUTUBE_UPLOAD_SCOPE
 
@@ -55,7 +56,7 @@ class YouTubeOAuthService:
         )
         self.repository.upsert_setting(
             "admin.youtube_oauth",
-            {"state": returned_state or state, "redirect_uri": redirect_uri},
+            {"state": returned_state or state, "redirect_uri": redirect_uri, "code_verifier": flow.code_verifier or ""},
             "admin",
         )
         self.repository.add_event("youtube_oauth_started", "已生成 YouTube OAuth 授权链接")
@@ -66,6 +67,7 @@ class YouTubeOAuthService:
         expected = self.repository.get_setting("admin.youtube_oauth", {})
         expected_state = expected.get("state") if isinstance(expected, dict) else None
         redirect_uri = expected.get("redirect_uri") if isinstance(expected, dict) else None
+        code_verifier = expected.get("code_verifier") if isinstance(expected, dict) else None
         if not redirect_uri:
             raise RuntimeError("请先生成授权链接")
         incoming_state = state or parsed_state
@@ -78,11 +80,15 @@ class YouTubeOAuthService:
             str(client_secret_path),
             YOUTUBE_OAUTH_SCOPES,
             redirect_uri=redirect_uri,
+            code_verifier=code_verifier or None,
         )
-        flow.fetch_token(code=code)
+        try:
+            flow.fetch_token(code=code)
+        except OAuth2Error as error:
+            raise ValueError(self._oauth_error_message(error)) from error
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(flow.credentials.to_json(), encoding="utf-8")
-        self.repository.upsert_setting("admin.youtube_oauth", {"state": "", "redirect_uri": redirect_uri}, "admin")
+        self.repository.upsert_setting("admin.youtube_oauth", {"state": "", "redirect_uri": redirect_uri, "code_verifier": ""}, "admin")
         self.repository.add_event("youtube_oauth_completed", "已保存 YouTube OAuth Token")
         return {
             "saved": True,
@@ -194,6 +200,16 @@ class YouTubeOAuthService:
         if isinstance(raw, dict):
             raw = default
         return resolve_path(str(raw), PROJECT_ROOT)
+
+    @staticmethod
+    def _oauth_error_message(error: OAuth2Error) -> str:
+        oauth_error = getattr(error, "error", "") or ""
+        description = getattr(error, "description", "") or str(error)
+        if oauth_error == "invalid_grant":
+            return "Google 授权码已失效或不属于当前授权链接，请重新生成授权链接并立即完成授权。"
+        if oauth_error == "access_denied":
+            return "Google 授权被取消或拒绝，请重新授权并允许 YouTube 权限。"
+        return f"Google 授权失败：{description}"
 
     @staticmethod
     def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
