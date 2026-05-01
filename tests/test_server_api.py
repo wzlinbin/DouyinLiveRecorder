@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import tempfile
 import unittest
 from uuid import uuid4
@@ -294,6 +295,15 @@ class ServerApiTest(unittest.TestCase):
         stopped_job = repository.get_row("recording_jobs", job["id"])
         self.assertEqual(stopped_job["status"], "interrupted")
         self.assertIn("尚未登记任何输出文件", stopped_job["error_message"])
+
+    def test_linux_stop_sends_sigint_to_process_group(self) -> None:
+        process = FakeProcess()
+        with patch("server.recorder_process_service.os.name", "posix"):
+            with patch("server.recorder_process_service.os.killpg", create=True) as killpg:
+                recorder_process_service._terminate(process)
+
+        killpg.assert_called_once_with(process.pid, signal.SIGINT)
+        self.assertTrue(process.stopped)
 
     def test_recording_job_delete_removes_finished_job_only(self) -> None:
         room = repository.create_room(

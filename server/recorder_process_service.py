@@ -45,6 +45,7 @@ class RecorderProcessService:
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 creationflags=self._creationflags(),
+                start_new_session=os.name != "nt",
             )
         except Exception:
             log_file.close()
@@ -198,9 +199,12 @@ class RecorderProcessService:
         if os.name == "nt":
             process.send_signal(signal.CTRL_BREAK_EVENT)
         else:
-            process.terminate()
+            os.killpg(process.pid, signal.SIGINT)
         try:
-            process.wait(timeout=20)
+            process.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            process.kill()
+            if os.name == "nt":
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=10)
