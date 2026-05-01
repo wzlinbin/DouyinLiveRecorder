@@ -31,7 +31,7 @@ def ensure_allowed_path(path: str | Path, roots: list[Path] | None = None) -> Pa
     resolved = resolve_path(path)
     allowed_roots = [root.resolve() for root in (roots or [DEFAULT_DOWNLOAD_ROOT, CONFIG_ROOT])]
     if not any(is_relative_to(resolved, root) for root in allowed_roots):
-        raise HTTPException(status_code=400, detail="Path is outside allowed roots")
+        raise HTTPException(status_code=400, detail="路径不在允许的目录范围内")
     return resolved
 
 

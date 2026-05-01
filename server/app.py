@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from .analytics_service import AnalyticsService
 from .command_worker_service import CommandWorkerService
@@ -28,10 +29,13 @@ from .schemas import (
     RecordedFileTranscodeRequest,
     RoomCreate,
     RoomPatch,
+    YouTubeOAuthCompleteRequest,
+    YouTubeOAuthStartRequest,
 )
 from .path_service import ensure_allowed_path
 from .transcode_service import TranscodeService
 from .upload_service import UploadService
+from .youtube_oauth_service import YouTubeOAuthService
 
 repository = Repository(db)
 config_service = ConfigService(repository)
@@ -41,8 +45,13 @@ transcode_service = TranscodeService(repository)
 download_watch_service = DownloadWatchService(repository, transcode_service)
 douyin_service = DouyinCollectionService(repository)
 analytics_service = AnalyticsService(repository)
+youtube_oauth_service = YouTubeOAuthService(repository)
 recorder_process_service = RecorderProcessService(repository)
 command_worker_service = CommandWorkerService(repository, recorder_process_service)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+FRONTEND_INDEX = FRONTEND_DIST / "index.html"
 
 
 @asynccontextmanager
@@ -50,7 +59,7 @@ async def lifespan(_: FastAPI):
     db.initialize()
     imported = config_service.import_once()
     if imported:
-        repository.add_event("startup", "Initial ini import completed")
+        repository.add_event("startup", "已完成初始 ini 导入")
     stop_event = asyncio.Event()
     watch_task = asyncio.create_task(download_watch_service.run_loop(stop_event))
     upload_task = asyncio.create_task(upload_service.run_loop(stop_event))
@@ -68,14 +77,23 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="DouyinLiveRecorder Admin", version="0.1.0", lifespan=lifespan)
+app.mount(
+    "/assets",
+    StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False),
+    name="frontend-assets",
+)
 
 
 def require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("ADMIN_API_TOKEN")
     if not expected:
-        raise HTTPException(status_code=503, detail="ADMIN_API_TOKEN is not configured")
+        raise HTTPException(status_code=503, detail="服务端未配置 ADMIN_API_TOKEN")
     if x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=401, detail="管理员 Token 无效")
+
+
+def frontend_build_available() -> bool:
+    return FRONTEND_INDEX.is_file()
 
 
 def build_dashboard_data() -> dict[str, Any]:
@@ -115,8 +133,8 @@ def build_dashboard_data() -> dict[str, Any]:
 
     return {
         "summary": {
-            "rooms_total": repository.count_rows("rooms"),
-            "rooms_enabled": repository.count_rows("rooms", where="enabled = 1"),
+            "rooms_total": repository.count_rows("rooms", where="deleted_at IS NULL"),
+            "rooms_enabled": repository.count_rows("rooms", where="enabled = 1 AND deleted_at IS NULL"),
             "active_jobs": repository.count_rows(
                 "recording_jobs",
                 where=f"status IN ({active_placeholders})",
@@ -154,8 +172,11 @@ def build_dashboard_data() -> dict[str, Any]:
     }
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> str:
+@app.get("/", response_model=None)
+def index() -> HTMLResponse | FileResponse:
+    if frontend_build_available():
+        return FileResponse(FRONTEND_INDEX)
+
     initial_state = json.dumps({"tokenConfigured": bool(os.environ.get("ADMIN_API_TOKEN"))}, ensure_ascii=False)
     template = """
 <!doctype html>
@@ -915,7 +936,7 @@ def index() -> str:
 </body>
 </html>
 """
-    return template.replace("__INITIAL_STATE__", initial_state)
+    return HTMLResponse(template.replace("__INITIAL_STATE__", initial_state))
 
 
 @app.get("/health")
@@ -926,6 +947,11 @@ def health() -> dict[str, Any]:
 @app.get("/api/dashboard")
 def dashboard() -> dict[str, Any]:
     return build_dashboard_data()
+
+
+@app.get("/api/auth/check", dependencies=[Depends(require_admin_token)])
+def check_auth() -> dict[str, bool]:
+    return {"ok": True}
 
 
 @app.get("/api/config")
@@ -953,6 +979,36 @@ def export_config() -> dict[str, int]:
     return config_service.export_ini()
 
 
+@app.get("/api/youtube/oauth/status")
+def youtube_oauth_status() -> dict[str, Any]:
+    return youtube_oauth_service.status()
+
+
+@app.post("/api/youtube/data-api/check", dependencies=[Depends(require_admin_token)])
+def check_youtube_data_api() -> dict[str, Any]:
+    return youtube_oauth_service.check_data_api_access()
+
+
+@app.post("/api/youtube/oauth/start", dependencies=[Depends(require_admin_token)])
+def start_youtube_oauth(request: YouTubeOAuthStartRequest) -> dict[str, str]:
+    try:
+        return youtube_oauth_service.start(request.redirect_uri)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.post("/api/youtube/oauth/complete", dependencies=[Depends(require_admin_token)])
+def complete_youtube_oauth(request: YouTubeOAuthCompleteRequest) -> dict[str, Any]:
+    try:
+        return youtube_oauth_service.complete(request.code, request.state)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.get("/api/rooms")
 def list_rooms() -> dict[str, list[dict]]:
     return {"data": repository.list_rooms()}
@@ -974,7 +1030,7 @@ def update_room(room_id: int, request: RoomPatch) -> dict:
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+        raise HTTPException(status_code=404, detail="直播间不存在")
     return room
 
 
@@ -985,8 +1041,8 @@ def delete_room(room_id: int) -> dict[str, bool]:
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
-    repository.add_event("room_deleted", f"Room {room_id} deleted", level="warning")
+        raise HTTPException(status_code=404, detail="直播间不存在")
+    repository.add_event("room_deleted", f"直播间 #{room_id} 已删除", level="warning")
     return {"deleted": True}
 
 
@@ -1005,6 +1061,18 @@ def list_jobs(status: str | None = None) -> dict[str, list[dict]]:
     if status:
         return {"data": repository.list_rows("recording_jobs", where="status = ?", params=(status,))}
     return {"data": repository.list_rows("recording_jobs")}
+
+
+@app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_admin_token)])
+def delete_job(job_id: int) -> dict[str, bool]:
+    try:
+        deleted = repository.delete_recording_job(job_id)
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="录制任务不存在")
+    repository.add_event("recording_job_deleted", f"录制任务 #{job_id} 已删除", level="warning")
+    return {"deleted": True}
 
 
 @app.get("/api/task-commands")
@@ -1050,7 +1118,7 @@ def list_files(
 def get_recorded_file_or_404(file_id: int) -> dict:
     recorded = repository.get_row("recorded_files", file_id)
     if not recorded:
-        raise HTTPException(status_code=404, detail="Recorded file not found")
+        raise HTTPException(status_code=404, detail="文件记录不存在")
     return recorded
 
 
@@ -1059,7 +1127,7 @@ def transcode_file(file_id: int, request: RecordedFileTranscodeRequest) -> dict:
     recorded = get_recorded_file_or_404(file_id)
     source_path = ensure_allowed_path(recorded["local_path"])
     if not source_path.exists() or not source_path.is_file():
-        raise HTTPException(status_code=404, detail="Source file is missing")
+        raise HTTPException(status_code=404, detail="源文件不存在")
     repository.update_recorded_file_path(file_id, source_path)
     try:
         target_path = transcode_service.transcode_to_mp4(
@@ -1082,22 +1150,22 @@ def rename_file(file_id: int, request: RecordedFileRenameRequest) -> dict:
     recorded = get_recorded_file_or_404(file_id)
     source_path = ensure_allowed_path(recorded["local_path"])
     if not source_path.exists() or not source_path.is_file():
-        raise HTTPException(status_code=404, detail="Source file is missing")
+        raise HTTPException(status_code=404, detail="源文件不存在")
     filename = request.filename.strip()
     if not filename or Path(filename).name != filename:
-        raise HTTPException(status_code=400, detail="Filename must not include path separators")
+        raise HTTPException(status_code=400, detail="文件名不能包含路径分隔符")
     target_path = ensure_allowed_path(source_path.parent / filename)
     if target_path.parent != source_path.parent:
-        raise HTTPException(status_code=400, detail="Target must stay in the source directory")
+        raise HTTPException(status_code=400, detail="目标文件必须保留在原目录")
     if target_path.exists():
-        raise HTTPException(status_code=409, detail="Target file already exists")
+        raise HTTPException(status_code=409, detail="目标文件已存在")
     source_path.rename(target_path)
     try:
         updated = repository.update_recorded_file_path(file_id, target_path)
     except ValueError as error:
         target_path.rename(source_path)
         raise HTTPException(status_code=409, detail=str(error)) from error
-    repository.add_event("file_renamed", f"Renamed {source_path.name} to {target_path.name}", file_id=file_id)
+    repository.add_event("file_renamed", f"文件已从 {source_path.name} 重命名为 {target_path.name}", file_id=file_id)
     return updated or get_recorded_file_or_404(file_id)
 
 
@@ -1106,9 +1174,14 @@ def delete_file(file_id: int) -> dict[str, bool]:
     recorded = get_recorded_file_or_404(file_id)
     source_path = ensure_allowed_path(recorded["local_path"])
     if source_path.exists() and source_path.is_file():
-        source_path.unlink()
+        try:
+            source_path.unlink()
+        except PermissionError as error:
+            raise HTTPException(status_code=409, detail="文件正在使用，无法删除") from error
+        except OSError as error:
+            raise HTTPException(status_code=409, detail=f"文件无法删除：{error}") from error
     deleted = repository.delete_recorded_file(file_id)
-    repository.add_event("file_deleted", f"Deleted {source_path.name}", level="warning", file_id=file_id)
+    repository.add_event("file_deleted", f"文件已删除：{source_path.name}", level="warning", file_id=file_id)
     return {"deleted": deleted}
 
 
@@ -1165,9 +1238,21 @@ def list_douyin_tasks() -> dict[str, list[dict]]:
 def get_douyin_task(task_id: int) -> dict[str, Any]:
     task = repository.get_row("douyin_collection_tasks", task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Douyin task not found")
+        raise HTTPException(status_code=404, detail="抖音下载任务不存在")
     items = repository.list_rows("douyin_downloaded_items", where="task_id = ?", params=(task_id,), order_by="id ASC")
     return {"task": task, "items": items}
+
+
+@app.delete("/api/douyin/tasks/{task_id}", dependencies=[Depends(require_admin_token)])
+def delete_douyin_task(task_id: int) -> dict[str, bool]:
+    try:
+        deleted = repository.delete_douyin_task(task_id)
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="抖音下载任务不存在")
+    repository.add_event("douyin_task_deleted", f"抖音下载任务 #{task_id} 已删除", level="warning")
+    return {"deleted": True}
 
 
 @app.get("/api/metrics/videos")
@@ -1183,3 +1268,12 @@ def refresh_metrics() -> dict[str, int]:
 @app.get("/api/events/recent")
 def recent_events(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, list[dict]]:
     return {"data": repository.list_rows("events", limit=limit)}
+
+
+@app.get("/{full_path:path}", include_in_schema=False, response_model=None)
+def frontend_fallback(full_path: str) -> FileResponse:
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="接口不存在")
+    if not frontend_build_available():
+        raise HTTPException(status_code=404, detail="前端构建文件不存在")
+    return FileResponse(FRONTEND_INDEX)

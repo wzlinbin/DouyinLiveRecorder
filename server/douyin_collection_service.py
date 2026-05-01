@@ -23,7 +23,7 @@ class DouyinCollectionService:
     def create_user_task(self, url: str, output_dir: str | None, proxy: str | None,
                          cookie: str | None, max_items: int, overwrite: bool) -> dict:
         if max_items < 1 or max_items > DOUYIN_MAX_BATCH_ITEMS:
-            raise HTTPException(status_code=400, detail=f"max_items must be between 1 and {DOUYIN_MAX_BATCH_ITEMS}")
+            raise HTTPException(status_code=400, detail=f"最大下载数量必须在 1 到 {DOUYIN_MAX_BATCH_ITEMS} 之间")
         return self._create_task("user_batch", url, max_items, output_dir, proxy, cookie, overwrite)
 
     def _create_task(self, task_type: str, url: str, max_items: int, output_dir: str | None,
@@ -39,7 +39,7 @@ class DouyinCollectionService:
             )
             row = connection.execute("SELECT * FROM douyin_collection_tasks WHERE id = last_insert_rowid()").fetchone()
             task = dict(row)
-        self.repository.add_event("douyin_task_created", f"Douyin {task_type} task created", douyin_task_id=task["id"])
+        self.repository.add_event("douyin_task_created", f"抖音下载任务已创建：{task_type}", douyin_task_id=task["id"])
         asyncio.create_task(self._run_task(task["id"], task_type, url, safe_output, proxy, cookie, max_items, overwrite))
         return task
 
@@ -64,7 +64,7 @@ class DouyinCollectionService:
             if task and task["progress_total"] and task["progress_done"] < task["progress_total"]:
                 status = "completed_with_errors"
             self._update_task(task_id, status=status, ended=True)
-            self.repository.add_event("douyin_task_completed", f"Douyin task {task_id} {status}", douyin_task_id=task_id)
+            self.repository.add_event("douyin_task_completed", f"抖音下载任务 #{task_id} 状态：{status}", douyin_task_id=task_id)
         except Exception as error:
             self._update_task(task_id, status="failed", error_message=str(error), ended=True)
             self.repository.add_event("douyin_task_failed", str(error), level="error", douyin_task_id=task_id)
@@ -89,7 +89,7 @@ class DouyinCollectionService:
                 """,
                 (task_id,),
             )
-        self.repository.add_event("douyin_item_downloaded", f"Downloaded Douyin item {work.aweme_id}",
+        self.repository.add_event("douyin_item_downloaded", f"抖音条目已下载：{work.aweme_id}",
                                   file_id=recorded["id"], douyin_task_id=task_id)
 
     def _upsert_item(self, task_id: int, aweme_id: str, author: str, description: str, source_url: str, status: str) -> int:

@@ -40,7 +40,7 @@ class AnalyticsService:
                     comment_count=int(stats.get("commentCount", 0)),
                 )
                 updated += 1
-        self.repository.add_event("youtube_metrics_refreshed", f"Refreshed metrics for {updated} videos")
+        self.repository.add_event("youtube_metrics_refreshed", f"已刷新 {updated} 个视频的指标")
         return {"requested": len(video_ids), "updated": updated}
 
     def _uploaded_video_ids(self) -> list[str]:
@@ -60,21 +60,34 @@ class AnalyticsService:
     def _build_client(self):
         token_path = self._token_path()
         if not token_path.exists():
-            raise RuntimeError(f"YouTube token file not found: {token_path}")
+            raise RuntimeError(f"YouTube Token 文件不存在：{token_path}")
         credentials = Credentials.from_authorized_user_file(str(token_path), YOUTUBE_UPLOAD_SCOPE)
         if credentials.expired and credentials.refresh_token:
             credentials.refresh(Request())
             token_path.write_text(credentials.to_json(), encoding="utf-8")
         if not credentials.valid:
-            raise RuntimeError("YouTube credentials are not valid")
+            raise RuntimeError("YouTube 凭据无效")
         return build("youtube", "v3", credentials=credentials)
 
     def _token_path(self) -> Path:
         settings = self.repository.get_setting("ini.YouTube上传", {})
-        raw = settings.get("YouTube令牌文件路径", "config/youtube_token.json")
+        raw = self._setting(settings, "YouTube令牌文件路径", "youtube令牌文件路径", "config/youtube_token.json")
         if isinstance(raw, dict):
             raw = "config/youtube_token.json"
         return resolve_path(str(raw), PROJECT_ROOT)
+
+    @staticmethod
+    def _setting(settings: dict, *keys_and_default: Any) -> Any:
+        *keys, default = keys_and_default
+        for key in keys:
+            if key in settings:
+                return settings[key]
+        lower_map = {str(key).lower(): value for key, value in settings.items()}
+        for key in keys:
+            lowered = str(key).lower()
+            if lowered in lower_map:
+                return lower_map[lowered]
+        return default
 
     @staticmethod
     def _chunks(items: list[str], size: int):

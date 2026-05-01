@@ -18,7 +18,7 @@ import RealtimeLog from '../components/RealtimeLog'
 import StatusBadge from '../components/StatusBadge'
 import { useAppStore } from '../stores/appStore'
 import type { DashboardData, Room } from '../types/admin'
-import { asBool } from '../utils/format'
+import { asBool, formatDateTime } from '../utils/format'
 
 function Dashboard() {
   const navigate = useNavigate()
@@ -50,7 +50,7 @@ function Dashboard() {
     <div className="page-stack">
       <PageHeader
         title="仪表盘"
-        subtitle="聚合直播间状态、录制进程、上传队列、下载监控和最近事件。"
+        subtitle="汇总直播间状态、录制进程、上传队列、下载监控和最近事件。"
         extra={
           <Button icon={<ReloadOutlined />} loading={loading} onClick={loadDashboard}>
             刷新
@@ -59,30 +59,10 @@ function Dashboard() {
       />
 
       <div className="metric-grid">
-        <MetricCard
-          title="直播间"
-          value={summary?.rooms_total ?? 0}
-          caption={`启用 ${summary?.rooms_enabled ?? 0} 个`}
-          icon={<VideoCameraOutlined />}
-        />
-        <MetricCard
-          title="活跃录制"
-          value={summary?.active_jobs ?? 0}
-          caption={`进程 ${summary?.runtime_processes ?? 0} 个`}
-          icon={<FileDoneOutlined />}
-        />
-        <MetricCard
-          title="上传队列"
-          value={summary?.uploads_pending ?? 0}
-          caption={`失败 ${summary?.uploads_failed ?? 0} 个`}
-          icon={<CloudUploadOutlined />}
-        />
-        <MetricCard
-          title="今日文件"
-          value={summary?.files_today ?? 0}
-          caption={`监控登记 ${summary?.watch_registered ?? 0} 个`}
-          icon={<FileSearchOutlined />}
-        />
+        <MetricCard title="直播间" value={summary?.rooms_total ?? 0} caption={`启用 ${summary?.rooms_enabled ?? 0} 个`} icon={<VideoCameraOutlined />} />
+        <MetricCard title="活跃录制" value={summary?.active_jobs ?? 0} caption={`进程 ${summary?.runtime_processes ?? 0} 个`} icon={<FileDoneOutlined />} />
+        <MetricCard title="上传队列" value={summary?.uploads_pending ?? 0} caption={`失败 ${summary?.uploads_failed ?? 0} 个`} icon={<CloudUploadOutlined />} />
+        <MetricCard title="今日文件" value={summary?.files_today ?? 0} caption={`监控登记 ${summary?.watch_registered ?? 0} 个`} icon={<FileSearchOutlined />} />
       </div>
 
       <div className="dashboard-grid">
@@ -134,7 +114,7 @@ function Dashboard() {
               pagination={{ pageSize: 6 }}
               columns={[
                 {
-                  title: '房间',
+                  title: '直播间',
                   dataIndex: 'name',
                   render: (_, room) => (
                     <Space>
@@ -147,18 +127,8 @@ function Dashboard() {
                   ),
                 },
                 { title: '清晰度', dataIndex: 'quality', width: 100 },
-                {
-                  title: '启用',
-                  dataIndex: 'enabled',
-                  width: 90,
-                  render: (enabled) => (asBool(enabled) ? '是' : '否'),
-                },
-                {
-                  title: '状态',
-                  dataIndex: 'display_status',
-                  width: 120,
-                  render: (status) => <StatusBadge status={status} pulse />,
-                },
+                { title: '启用', dataIndex: 'enabled', width: 90, render: (enabled) => (asBool(enabled) ? '是' : '否') },
+                { title: '状态', dataIndex: 'display_status', width: 120, render: (status) => <StatusBadge status={status} pulse /> },
               ]}
             />
           </Card>
@@ -177,7 +147,7 @@ function Dashboard() {
                           <StatusBadge status={job.status} />
                         </Space>
                       }
-                      description={`房间 #${job.room_id} · ${job.updated_at}`}
+                      description={`直播间 #${job.room_id} · ${formatDateTime(job.updated_at)}`}
                     />
                   </List.Item>
                 )}
@@ -189,14 +159,7 @@ function Dashboard() {
                 locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无运行进程" /> }}
                 renderItem={(runtime) => (
                   <List.Item>
-                    <List.Item.Meta
-                      title={`任务 #${runtime.job_id}`}
-                      description={
-                        <span>
-                          PID {runtime.pid} · {runtime.output_dir}
-                        </span>
-                      }
-                    />
+                    <List.Item.Meta title={`任务 #${runtime.job_id}`} description={`PID ${runtime.pid} · ${runtime.output_dir}`} />
                   </List.Item>
                 )}
               />
@@ -221,7 +184,7 @@ function Dashboard() {
                         <StatusBadge status={upload.status} />
                       </Space>
                     }
-                    description={`重试 ${upload.retry_count} 次 · ${upload.updated_at}`}
+                    description={`重试 ${upload.retry_count} 次 · ${formatDateTime(upload.updated_at)}`}
                   />
                 </List.Item>
               )}

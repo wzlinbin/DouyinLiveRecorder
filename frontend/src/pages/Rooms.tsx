@@ -135,7 +135,7 @@ function Rooms() {
     <div className="page-stack">
       <PageHeader
         title="直播间管理"
-        subtitle="维护直播间 URL、平台、画质和启用状态，并对单个直播间快速开始或停止录制。"
+        subtitle="维护直播间链接、平台、画质和启用状态，并对单个直播间快速开始或停止录制。"
         extra={
           <>
             <Button icon={<ReloadOutlined />} onClick={loadRooms}>
@@ -154,7 +154,7 @@ function Rooms() {
         dataSource={rooms}
         columns={[
           {
-            title: '房间',
+            title: '直播间',
             dataIndex: 'name',
             render: (_, room) => (
               <Space>
@@ -173,11 +173,7 @@ function Rooms() {
             dataIndex: 'enabled',
             width: 100,
             render: (_, room) => (
-              <Switch
-                checked={asBool(room.enabled)}
-                loading={actionKey === `toggle:${room.id}`}
-                onChange={(checked) => toggleEnabled(room, checked)}
-              />
+              <Switch checked={asBool(room.enabled)} loading={actionKey === `toggle:${room.id}`} onChange={(checked) => toggleEnabled(room, checked)} />
             ),
           },
           {
@@ -188,28 +184,18 @@ function Rooms() {
           },
           {
             title: '操作',
-              width: 350,
-              render: (_, room) => {
-                const active = ['pending', 'probing', 'recording', 'stopping'].includes(room.latest_job?.status || '')
-                return (
+            width: 350,
+            render: (_, room) => {
+              const active = ['pending', 'probing', 'recording', 'stopping'].includes(room.latest_job?.status || '')
+              return (
                 <Space wrap>
                   <Button icon={<EditOutlined />} onClick={() => openEdit(room)}>
                     编辑
                   </Button>
-                  <Button
-                    type="primary"
-                    disabled={active}
-                    loading={actionKey === `start:${room.id}`}
-                    onClick={() => startRoom(room)}
-                  >
+                  <Button type="primary" disabled={active} loading={actionKey === `start:${room.id}`} onClick={() => startRoom(room)}>
                     开始
                   </Button>
-                  <Button
-                    danger
-                    disabled={!active}
-                    loading={actionKey === `stop:${room.id}`}
-                    onClick={() => stopRoom(room)}
-                  >
+                  <Button danger disabled={!active} loading={actionKey === `stop:${room.id}`} onClick={() => stopRoom(room)}>
                     停止
                   </Button>
                   <Popconfirm
@@ -220,12 +206,7 @@ function Rooms() {
                     disabled={active}
                     onConfirm={() => deleteRoom(room)}
                   >
-                    <Button
-                      danger
-                      icon={<DeleteOutlined />}
-                      disabled={active}
-                      loading={actionKey === `delete:${room.id}`}
-                    >
+                    <Button danger icon={<DeleteOutlined />} disabled={active} loading={actionKey === `delete:${room.id}`}>
                       删除
                     </Button>
                   </Popconfirm>
@@ -236,15 +217,9 @@ function Rooms() {
         ]}
       />
 
-      <Drawer
-        title={editingRoom ? '编辑直播间' : '新增直播间'}
-        width={440}
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        destroyOnClose
-      >
+      <Drawer title={editingRoom ? '编辑直播间' : '新增直播间'} width={440} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose>
         <Form form={form} layout="vertical" onFinish={saveRoom} initialValues={{ quality: '原画', enabled: true }}>
-          <Form.Item name="url" label="直播间 URL" rules={[{ required: true, message: '请输入直播间 URL' }]}>
+          <Form.Item name="url" label="直播间链接" rules={[{ required: true, message: '请输入直播间链接' }]}>
             <Input placeholder="https://live.douyin.com/..." />
           </Form.Item>
           <Form.Item name="name" label="主播名">

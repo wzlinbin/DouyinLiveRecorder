@@ -11,6 +11,7 @@ from .repository import Repository
 CONFIG_FILE = PROJECT_ROOT / "config" / "config.ini"
 URL_CONFIG_FILE = PROJECT_ROOT / "config" / "URL_config.ini"
 SENSITIVE_WORDS = ("cookie", "token", "secret", "密钥", "令牌", "密码", "授权码")
+PATH_WORDS = ("path", "file", "路径", "文件")
 QUALITY_VALUES = {"原画", "蓝光", "超清", "高清", "标清", "流畅"}
 
 
@@ -31,6 +32,8 @@ def guess_platform(url: str) -> str:
 
 def sanitize_key(section: str, option: str) -> bool:
     lower = f"{section}.{option}".lower()
+    if any(word in lower for word in PATH_WORDS):
+        return False
     return any(word.lower() in lower for word in SENSITIVE_WORDS)
 
 
@@ -84,9 +87,9 @@ class ConfigService:
 
     def update_section(self, section: str, values: dict) -> dict:
         current = self.get_section(section)
-        updated = {**current, **self._sanitize_values(section, values)}
+        updated = self._merge_values(current, self._sanitize_values(section, values))
         self.repository.upsert_setting(f"ini.{section}", updated, "ini")
-        self.repository.add_event("config_update", f"Updated ini section {section}")
+        self.repository.add_event("config_update", f"已更新 ini 配置段：{section}")
         return updated
 
     def export_ini(self, config_path: Path = CONFIG_FILE, url_config_path: Path = URL_CONFIG_FILE) -> dict[str, int]:
@@ -119,7 +122,7 @@ class ConfigService:
                 line += f",主播: {room['name']}"
             url_lines.append(line)
         url_config_path.write_text("\n".join(url_lines) + ("\n" if url_lines else ""), encoding="utf-8-sig")
-        self.repository.add_event("config_export", f"Exported {sections} sections and {len(url_lines)} rooms")
+        self.repository.add_event("config_export", f"已导出 {sections} 个配置段和 {len(url_lines)} 个直播间")
         return {"settings_sections": sections, "room_lines": len(url_lines)}
 
     def _sanitize_values(self, section: str, values: dict) -> dict:
@@ -129,6 +132,16 @@ class ConfigService:
                 result[option] = {"configured": bool(value)}
             else:
                 result[option] = value
+        return result
+
+    @staticmethod
+    def _merge_values(current: dict, updates: dict) -> dict:
+        result = dict(current)
+        option_map = {str(key).lower(): key for key in result}
+        for key, value in updates.items():
+            existing_key = option_map.get(str(key).lower(), key)
+            result[existing_key] = value
+            option_map[str(existing_key).lower()] = existing_key
         return result
 
     def import_ini(self, config_path: Path = CONFIG_FILE, url_config_path: Path = URL_CONFIG_FILE) -> dict[str, int]:
@@ -157,7 +170,7 @@ class ConfigService:
                     self.repository.create_room(**parsed, source="ini")
                     rooms_count += 1
         self.repository.upsert_setting("admin.imported_from_ini", True, "admin")
-        self.repository.add_event("config_import", f"Imported {settings_count} setting sections and {rooms_count} room lines")
+        self.repository.add_event("config_import", f"已导入 {settings_count} 个配置段和 {rooms_count} 条直播间配置")
         return {"settings_sections": settings_count, "room_lines": rooms_count}
 
     def import_once(self) -> dict[str, int] | None:

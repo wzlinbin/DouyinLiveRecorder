@@ -25,6 +25,15 @@ class ConfigSectionPatch(BaseModel):
     values: dict
 
 
+class YouTubeOAuthStartRequest(BaseModel):
+    redirect_uri: str = "http://localhost"
+
+
+class YouTubeOAuthCompleteRequest(BaseModel):
+    code: str = Field(min_length=1)
+    state: str | None = None
+
+
 class DownloadWatchSettingsPatch(BaseModel):
     enabled: bool | None = None
     directories: list[str] | None = None

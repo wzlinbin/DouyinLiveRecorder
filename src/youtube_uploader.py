@@ -27,6 +27,7 @@ class YouTubeUploadConfig:
     category_id: str = "22"
     allowed_extensions: set[str] | None = None
     max_attempts: int = 3
+    enqueue_retryable_on_start: bool = True
 
 
 class YouTubeUploader:
@@ -37,7 +38,8 @@ class YouTubeUploader:
         self.state = self._load_state()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
-        self._enqueue_retryable_items()
+        if self.config.enqueue_retryable_on_start:
+            self._enqueue_retryable_items()
 
     def wait_for_uploads(self) -> None:
         self.upload_queue.join()

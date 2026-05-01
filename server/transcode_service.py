@@ -25,11 +25,11 @@ class TranscodeService:
             self.repository.add_event("transcode_failed", message, level="error")
             raise RuntimeError(message) from error
         if not target_path.exists() or target_path.stat().st_size <= 0:
-            raise RuntimeError(f"Transcode output was not created: {target_path}")
+            raise RuntimeError(f"转码输出文件未生成：{target_path}")
         if delete_origin and source_path.exists():
             time.sleep(1)
             os.remove(source_path)
-        self.repository.add_event("transcode_completed", f"Transcoded {source_path.name} to MP4")
+        self.repository.add_event("transcode_completed", f"文件已转码为 MP4：{source_path.name}")
         return target_path
 
     @staticmethod

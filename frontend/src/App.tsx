@@ -28,8 +28,7 @@ function App() {
           colorBorder: '#2f3a4a',
           colorText: '#eef4ff',
           colorTextSecondary: '#9da9bb',
-          fontFamily:
-            'Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+          fontFamily: 'Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
         },
         components: {
           Layout: {

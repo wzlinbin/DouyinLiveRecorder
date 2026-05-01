@@ -13,6 +13,10 @@ import type {
   RecordingJob,
   Room,
   UploadRecord,
+  YouTubeDataApiCheck,
+  YouTubeOAuthComplete,
+  YouTubeOAuthStart,
+  YouTubeOAuthStatus,
   YoutubeMetric,
 } from '../types/admin'
 
@@ -28,23 +32,49 @@ function authHeaders(token: string) {
 export function getErrorMessage(error: unknown) {
   if (axios.isAxiosError(error)) {
     if (error.response?.status === 401) {
-      return '管理员 Token 无效或未保存，请在右上角输入 X-Admin-Token 后点击保存。'
+      return '管理员令牌无效或未校验，请在右上角输入正确的管理员令牌后保存。'
     }
     if (error.response?.status === 503) {
-      return '服务端未配置 ADMIN_API_TOKEN，写操作暂不可用。'
+      return '服务端未配置 ADMIN_API_TOKEN，写入操作暂不可用。'
     }
     const detail = error.response?.data?.detail
     if (typeof detail === 'string') {
-      return detail
+      return translateServerDetail(detail)
     }
     return error.message
   }
   return error instanceof Error ? error.message : '请求失败'
 }
 
+function translateServerDetail(detail: string) {
+  const detailMap: Record<string, string> = {
+    Unauthorized: '管理员令牌无效。',
+    'ADMIN_API_TOKEN is not configured': '服务端未配置 ADMIN_API_TOKEN。',
+    'Room not found': '直播间不存在。',
+    'Recording job not found': '录制任务不存在。',
+    'Recorded file not found': '录制文件不存在。',
+    'Source file is missing': '源文件不存在。',
+    'Filename must not include path separators': '文件名不能包含路径分隔符。',
+    'Target must stay in the source directory': '目标文件必须保留在源目录内。',
+    'Target file already exists': '目标文件已存在。',
+    'File is in use and cannot be deleted': '文件正在使用中，无法删除。',
+    'Douyin task not found': '抖音下载任务不存在。',
+    'Upload record not found': '上传记录不存在。',
+    'Path is outside allowed roots': '路径不在允许的目录范围内。',
+    'Please generate an authorization URL first': '请先生成授权链接。',
+    'OAuth state does not match': '授权状态不匹配，请重新生成授权链接。',
+    'Authorization code is required': '请输入授权码。',
+  }
+  return detailMap[detail] || detail
+}
+
 export const adminApi = {
   async dashboard() {
     const { data } = await api.get<DashboardData>('/dashboard')
+    return data
+  },
+  async checkAuth(token: string) {
+    const { data } = await api.get<{ ok: boolean }>('/auth/check', { headers: authHeaders(token) })
     return data
   },
   async rooms() {
@@ -74,6 +104,10 @@ export const adminApi = {
   async jobs(status?: string) {
     const { data } = await api.get<ApiList<RecordingJob>>('/jobs', { params: status ? { status } : undefined })
     return data.data
+  },
+  async deleteJob(token: string, jobId: number) {
+    const { data } = await api.delete<{ deleted: boolean }>(`/jobs/${jobId}`, { headers: authHeaders(token) })
+    return data
   },
   async files(params?: { room_id?: number; job_id?: number; status?: string }) {
     const { data } = await api.get<ApiList<RecordedFile>>('/files', { params })
@@ -123,6 +157,10 @@ export const adminApi = {
     const { data } = await api.get<{ task: DouyinTask; items: DouyinDownloadedItem[] }>(`/douyin/tasks/${taskId}`)
     return data
   },
+  async deleteDouyinTask(token: string, taskId: number) {
+    const { data } = await api.delete<{ deleted: boolean }>(`/douyin/tasks/${taskId}`, { headers: authHeaders(token) })
+    return data
+  },
   async createDouyinSingle(token: string, payload: { url: string; output_dir?: string; cookie?: string; proxy?: string; overwrite: boolean }) {
     const { data } = await api.post<DouyinTask>('/douyin/download', payload, { headers: authHeaders(token) })
     return data
@@ -163,6 +201,30 @@ export const adminApi = {
   },
   async exportConfig(token: string) {
     const { data } = await api.post<{ exported: number }>('/config/export', undefined, { headers: authHeaders(token) })
+    return data
+  },
+  async youtubeOAuthStatus() {
+    const { data } = await api.get<YouTubeOAuthStatus>('/youtube/oauth/status')
+    return data
+  },
+  async checkYouTubeDataApi(token: string) {
+    const { data } = await api.post<YouTubeDataApiCheck>('/youtube/data-api/check', undefined, { headers: authHeaders(token) })
+    return data
+  },
+  async startYoutubeOAuth(token: string, redirectUri: string) {
+    const { data } = await api.post<YouTubeOAuthStart>(
+      '/youtube/oauth/start',
+      { redirect_uri: redirectUri },
+      { headers: authHeaders(token) },
+    )
+    return data
+  },
+  async completeYoutubeOAuth(token: string, code: string) {
+    const { data } = await api.post<YouTubeOAuthComplete>(
+      '/youtube/oauth/complete',
+      { code },
+      { headers: authHeaders(token) },
+    )
     return data
   },
 }

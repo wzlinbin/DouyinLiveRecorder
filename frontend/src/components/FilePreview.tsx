@@ -21,7 +21,7 @@ function FilePreview({ file }: FilePreviewProps) {
           <Space size={8} wrap style={{ marginTop: 8 }}>
             <StatusBadge status={file.status} />
             <span>{formatBytes(file.size_bytes)}</span>
-            <span>{file.format || 'unknown'}</span>
+            <span>{file.format || '未知格式'}</span>
             <span>{formatDuration(file.duration_seconds)}</span>
           </Space>
         </div>

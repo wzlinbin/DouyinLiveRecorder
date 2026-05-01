@@ -8,7 +8,7 @@ import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import { useAppStore } from '../stores/appStore'
 import type { UploadRecord, YoutubeMetric } from '../types/admin'
-import { fileName } from '../utils/format'
+import { fileName, formatDateTime, formatPrivacy } from '../utils/format'
 
 function Uploads() {
   const token = useAppStore((state) => state.token)
@@ -85,8 +85,8 @@ function Uploads() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="转码与上传"
-        subtitle="追踪上传队列、失败重试和 YouTube 指标缓存。"
+        title="上传队列"
+        subtitle="查看自动上传状态、失败重试和 YouTube 指标缓存。"
         extra={
           <>
             <Button icon={<ReloadOutlined />} loading={loading} onClick={loadData}>
@@ -122,10 +122,10 @@ function Uploads() {
                 </div>
               ),
             },
-            { title: '隐私', dataIndex: 'privacy_status', width: 100 },
+            { title: '可见性', dataIndex: 'privacy_status', width: 120, render: formatPrivacy },
             { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusBadge status={value} pulse /> },
-            { title: '重试', dataIndex: 'retry_count', width: 90 },
-            { title: 'YouTube ID', dataIndex: 'youtube_video_id', width: 150, render: (value) => value || '-' },
+            { title: '重试次数', dataIndex: 'retry_count', width: 100 },
+            { title: 'YouTube 视频 ID', dataIndex: 'youtube_video_id', width: 160, render: (value) => value || '-' },
             {
               title: '操作',
               width: 170,
@@ -134,12 +134,7 @@ function Uploads() {
                   <Button type="link" onClick={() => setSelectedUpload(upload)}>
                     详情
                   </Button>
-                  <Button
-                    type="link"
-                    disabled={upload.status !== 'failed'}
-                    loading={retryingUploadId === upload.id}
-                    onClick={() => retryUpload(upload)}
-                  >
+                  <Button type="link" disabled={upload.status !== 'failed'} loading={retryingUploadId === upload.id} onClick={() => retryUpload(upload)}>
                     重试
                   </Button>
                 </Space>
@@ -180,12 +175,7 @@ function Uploads() {
         />
       </Card>
 
-      <Drawer
-        title={selectedUpload ? `上传 #${selectedUpload.id}` : '上传详情'}
-        width={620}
-        open={!!selectedUpload}
-        onClose={() => setSelectedUpload(null)}
-      >
+      <Drawer title={selectedUpload ? `上传 #${selectedUpload.id}` : '上传详情'} width={620} open={!!selectedUpload} onClose={() => setSelectedUpload(null)}>
         {selectedUpload ? (
           <div className="page-stack">
             <Descriptions column={1} bordered size="small">
@@ -194,12 +184,12 @@ function Uploads() {
               <Descriptions.Item label="状态">
                 <StatusBadge status={selectedUpload.status} />
               </Descriptions.Item>
-              <Descriptions.Item label="隐私">{selectedUpload.privacy_status}</Descriptions.Item>
-              <Descriptions.Item label="YouTube ID">{selectedUpload.youtube_video_id || '-'}</Descriptions.Item>
+              <Descriptions.Item label="可见性">{formatPrivacy(selectedUpload.privacy_status)}</Descriptions.Item>
+              <Descriptions.Item label="YouTube 视频 ID">{selectedUpload.youtube_video_id || '-'}</Descriptions.Item>
               <Descriptions.Item label="重试次数">{selectedUpload.retry_count}</Descriptions.Item>
               <Descriptions.Item label="失败原因">{selectedUpload.failure_reason || '-'}</Descriptions.Item>
-              <Descriptions.Item label="创建时间">{selectedUpload.created_at}</Descriptions.Item>
-              <Descriptions.Item label="更新时间">{selectedUpload.updated_at}</Descriptions.Item>
+              <Descriptions.Item label="创建时间">{formatDateTime(selectedUpload.created_at)}</Descriptions.Item>
+              <Descriptions.Item label="更新时间">{formatDateTime(selectedUpload.updated_at)}</Descriptions.Item>
             </Descriptions>
 
             <Card title="单视频趋势" size="small">

@@ -191,3 +191,32 @@ export type ConfigSection = {
   section: string
   values: Record<string, unknown>
 }
+
+export type YouTubeOAuthStatus = {
+  client_secret_path: string
+  token_path: string
+  client_secret_exists: boolean
+  token_exists: boolean
+  token_valid: boolean
+  token_error: string
+  data_api_scope_valid?: boolean
+}
+
+export type YouTubeOAuthStart = {
+  auth_url: string
+  redirect_uri: string
+}
+
+export type YouTubeOAuthComplete = {
+  saved: boolean
+  token_path: string
+  token_exists: boolean
+  token_valid: boolean
+}
+
+export type YouTubeDataApiCheck = {
+  ok: boolean
+  status: string
+  message: string
+  detail: string
+}

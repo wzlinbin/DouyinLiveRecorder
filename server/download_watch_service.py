@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from .models import TEMP_SUFFIXES, VIDEO_SUFFIXES
-from .path_service import DEFAULT_DOWNLOAD_ROOT, ensure_allowed_path, file_identity, public_path
+from .path_service import DEFAULT_DOWNLOAD_ROOT, ensure_allowed_path, file_identity, is_relative_to, public_path
 from .repository import Repository
 from .transcode_service import TranscodeService
 
@@ -39,7 +39,7 @@ class DownloadWatchService:
         updated["delete_origin_after_transcode"] = bool(updated.get("delete_origin_after_transcode", False))
         updated["reencode_h264"] = bool(updated.get("reencode_h264", False))
         self.repository.upsert_setting("download_watch.settings", updated, "download_watch")
-        self.repository.add_event("download_watch_settings", "Download watch settings updated")
+        self.repository.add_event("download_watch_settings", "下载监控设置已更新")
         return updated
 
     def scan_once(self) -> dict[str, int]:
@@ -54,6 +54,8 @@ class DownloadWatchService:
             if not root.exists():
                 continue
             for path in root.rglob("*"):
+                if self._is_admin_recording_path(path):
+                    continue
                 if not path.is_file() or path.suffix.lower() in TEMP_SUFFIXES:
                     continue
                 if path.suffix.lower() not in VIDEO_SUFFIXES:
@@ -62,6 +64,11 @@ class DownloadWatchService:
                 if self._observe_file(root, path, stable_target, settings):
                     registered += 1
         return {"candidates": candidates, "registered": registered}
+
+    @staticmethod
+    def _is_admin_recording_path(path: Path) -> bool:
+        admin_jobs_root = (DEFAULT_DOWNLOAD_ROOT / "admin_jobs").resolve()
+        return is_relative_to(path.resolve(), admin_jobs_root)
 
     def _observe_file(self, root: Path, path: Path, stable_target: int, settings: dict) -> bool:
         identity = file_identity(path)
@@ -111,7 +118,7 @@ class DownloadWatchService:
                 """,
                 (recorded["id"], identity),
             )
-        self.repository.add_event("download_watch_registered", f"Registered downloaded file {final_path.name}", file_id=recorded["id"])
+        self.repository.add_event("download_watch_registered", f"下载监控已登记文件：{final_path.name}", file_id=recorded["id"])
         return True
 
     async def run_loop(self, stop_event: asyncio.Event) -> None:

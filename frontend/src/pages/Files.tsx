@@ -1,5 +1,5 @@
 import { DeleteOutlined, EditOutlined, ReloadOutlined, SearchOutlined, SyncOutlined } from '@ant-design/icons'
-import { Button, Card, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Typography } from 'antd'
+import { Alert, Button, Card, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Tooltip, Typography } from 'antd'
 import type { Key } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { adminApi, getErrorMessage } from '../api/client'
@@ -8,10 +8,16 @@ import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import { useAppStore } from '../stores/appStore'
 import type { RecordedFile } from '../types/admin'
-import { fileName, formatBytes, formatDuration } from '../utils/format'
+import { fileName, formatBytes, formatDateTime, formatDuration, formatSource } from '../utils/format'
 
 type RenameFormValues = {
   filename: string
+}
+
+const transcodableFormats = new Set(['ts', 'flv', 'mkv', 'mov', 'webm'])
+
+function canTranscode(file: RecordedFile) {
+  return transcodableFormats.has((file.format || '').toLowerCase())
 }
 
 function Files() {
@@ -52,7 +58,7 @@ function Files() {
     setActionKey(`transcode:${file.id}`)
     try {
       await adminApi.transcodeFile(token, file.id, { delete_origin: false, reencode_h264: false })
-      message.success('已完成转码登记')
+      message.success('补转码已完成，文件已登记到上传队列')
       await loadFiles()
     } catch (error) {
       message.error(getErrorMessage(error))
@@ -82,12 +88,19 @@ function Files() {
     }
     setActionKey('delete:selected')
     try {
-      await Promise.all(ids.map((id) => adminApi.deleteFile(token, id)))
-      message.success(`已删除 ${ids.length} 个文件`)
-      setSelectedRowKeys([])
+      const results = await Promise.allSettled(ids.map((id) => adminApi.deleteFile(token, id)))
+      const succeededIds = ids.filter((_, index) => results[index].status === 'fulfilled')
+      const failedResults = results.filter((result) => result.status === 'rejected')
+      if (succeededIds.length) {
+        message.success(`已删除 ${succeededIds.length} 个文件`)
+      }
+      if (failedResults.length) {
+        const firstError = failedResults[0]
+        const reason = firstError.status === 'rejected' ? getErrorMessage(firstError.reason) : ''
+        message.error(`${failedResults.length} 个文件删除失败${reason ? `：${reason}` : ''}`)
+      }
+      setSelectedRowKeys((keys) => keys.filter((key) => !succeededIds.includes(Number(key))))
       await loadFiles()
-    } catch (error) {
-      message.error(getErrorMessage(error))
     } finally {
       setActionKey(null)
     }
@@ -119,12 +132,19 @@ function Files() {
     <div className="page-stack">
       <PageHeader
         title="文件管理"
-        subtitle="查看录制和下载监控登记的文件，按状态筛选后可继续接入转码、重命名、删除等批量动作。"
+        subtitle="查看自动录制、自动转码和自动上传登记的文件；这里主要用于排查、重命名和删除异常记录。"
         extra={
           <Button icon={<ReloadOutlined />} loading={loading} onClick={loadFiles}>
             刷新
           </Button>
         }
+      />
+
+      <Alert
+        type="info"
+        showIcon
+        message="正常流程不需要手动转码"
+        description="录制完成后的转码和上传由后台自动处理。只有发现非 MP4 文件未被自动处理时，才需要在这里使用“补转码”。"
       />
 
       <Card>
@@ -150,7 +170,11 @@ function Files() {
             value={status}
             onChange={setStatus}
             style={{ width: 160 }}
-            options={['ready', 'uploaded', 'failed'].map((value) => ({ value, label: value }))}
+            options={[
+              { value: 'ready', label: '就绪' },
+              { value: 'uploaded', label: '已上传' },
+              { value: 'failed', label: '失败' },
+            ]}
           />
           <Popconfirm
             title="删除选中文件"
@@ -187,22 +211,21 @@ function Files() {
             { title: '大小', dataIndex: 'size_bytes', width: 120, render: formatBytes },
             { title: '时长', dataIndex: 'duration_seconds', width: 100, render: formatDuration },
             { title: '格式', dataIndex: 'format', width: 90 },
-            { title: '来源', dataIndex: 'source', width: 130 },
+            { title: '来源', dataIndex: 'source', width: 130, render: formatSource },
             { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusBadge status={value} /> },
-            { title: '创建时间', dataIndex: 'created_at', width: 180 },
+            { title: '创建时间', dataIndex: 'created_at', width: 180, render: formatDateTime },
             {
               title: '操作',
-              width: 210,
+              width: 230,
               render: (_, file) => (
                 <Space wrap>
-                  <Button
-                    size="small"
-                    icon={<SyncOutlined />}
-                    loading={actionKey === `transcode:${file.id}`}
-                    onClick={() => transcodeFile(file)}
-                  >
-                    转码
-                  </Button>
+                  {canTranscode(file) ? (
+                    <Tooltip title="用于自动转码失败后的手动补救">
+                      <Button size="small" icon={<SyncOutlined />} loading={actionKey === `transcode:${file.id}`} onClick={() => transcodeFile(file)}>
+                        补转码
+                      </Button>
+                    </Tooltip>
+                  ) : null}
                   <Button size="small" icon={<EditOutlined />} onClick={() => openRename(file)}>
                     重命名
                   </Button>
@@ -233,11 +256,7 @@ function Files() {
         destroyOnClose
       >
         <Form form={renameForm} layout="vertical" onFinish={saveRename}>
-          <Form.Item
-            name="filename"
-            label="新文件名"
-            rules={[{ required: true, message: '请输入文件名' }]}
-          >
+          <Form.Item name="filename" label="新文件名" rules={[{ required: true, message: '请输入文件名' }]}>
             <Input placeholder="example.mp4" />
           </Form.Item>
         </Form>

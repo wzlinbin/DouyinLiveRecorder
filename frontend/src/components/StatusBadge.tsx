@@ -9,6 +9,7 @@ const statusText: Record<string, string> = {
   recording: '录制中',
   stopping: '停止中',
   completed: '已完成',
+  completed_with_errors: '部分失败',
   interrupted: '已中断',
   failed: '失败',
   ready: '就绪',
@@ -20,6 +21,12 @@ const statusText: Record<string, string> = {
   candidate: '候选',
   stable: '稳定',
   not_required: '无需处理',
+  not_running: '未运行',
+  skipped: '已跳过',
+  retrying: '重试中',
+  info: '信息',
+  warning: '警告',
+  error: '错误',
 }
 
 const levelMap: Record<string, StatusLevel> = {
@@ -29,15 +36,25 @@ const levelMap: Record<string, StatusLevel> = {
   uploaded: 'success',
   registered: 'success',
   ready: 'success',
+  stable: 'success',
   pending: 'warning',
   probing: 'warning',
   stopping: 'warning',
   queued: 'warning',
   uploading: 'warning',
+  retrying: 'warning',
+  candidate: 'warning',
+  warning: 'warning',
   failed: 'error',
   interrupted: 'error',
+  completed_with_errors: 'error',
+  error: 'error',
   disabled: 'default',
   idle: 'default',
+  info: 'default',
+  not_required: 'default',
+  not_running: 'default',
+  skipped: 'default',
 }
 
 const tagColor: Record<StatusLevel, string> = {

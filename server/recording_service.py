@@ -12,20 +12,20 @@ class RecordingService:
     def start_room(self, room_id: int) -> dict:
         room = self.repository.get_row("rooms", room_id)
         if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
+            raise HTTPException(status_code=404, detail="直播间不存在")
         active_job = self.repository.active_job_for_room(room_id)
         if active_job:
             return active_job
         job = self.repository.create_recording_job(room)
-        self.repository.add_event("recording_start_requested", f"Start requested for room {room_id}", job_id=job["id"])
+        self.repository.add_event("recording_start_requested", f"已请求开始录制直播间 #{room_id}", job_id=job["id"])
         return job
 
     def stop_room(self, room_id: int) -> dict:
         room = self.repository.get_row("rooms", room_id)
         if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
+            raise HTTPException(status_code=404, detail="直播间不存在")
         job = self.repository.stop_recording_job(room_id)
         if job:
-            self.repository.add_event("recording_stop_requested", f"Stop requested for room {room_id}", job_id=job["id"])
+            self.repository.add_event("recording_stop_requested", f"已请求停止录制直播间 #{room_id}", job_id=job["id"])
             return job
         return {"room_id": room_id, "status": "not_running"}

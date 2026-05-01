@@ -110,7 +110,7 @@ class Repository:
         if "url" in fields:
             fields["url"] = str(fields["url"]).strip()
             if not fields["url"]:
-                raise ValueError("Room URL cannot be empty")
+                raise ValueError("直播间 URL 不能为空")
         if "enabled" in fields:
             fields["enabled"] = int(bool(fields["enabled"]))
         assignments = ", ".join(f"{key} = ?" for key in fields)
@@ -122,7 +122,7 @@ class Repository:
                     (fields["url"], room_id),
                 ).fetchone()
                 if existing:
-                    raise ValueError("Room URL already exists")
+                    raise ValueError("直播间 URL 已存在")
             connection.execute(
                 f"UPDATE rooms SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
                 (*values, room_id),
@@ -140,7 +140,7 @@ class Repository:
                 (room_id,),
             ).fetchone()
             if active:
-                raise RuntimeError("Room has an active recording job")
+                raise RuntimeError("直播间仍有进行中的录制任务")
             deleted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             archived_url = f"{row['url']}#deleted-{room_id}-{deleted_at}"
             connection.execute(
@@ -206,6 +206,19 @@ class Repository:
             updated = connection.execute("SELECT * FROM recording_jobs WHERE id = ?", (row["id"],)).fetchone()
             return row_to_dict(updated)
 
+    def delete_recording_job(self, job_id: int) -> bool:
+        with self.database.transaction() as connection:
+            row = connection.execute("SELECT * FROM recording_jobs WHERE id = ?", (job_id,)).fetchone()
+            if not row:
+                return False
+            if row["status"] in ACTIVE_JOB_STATES:
+                raise RuntimeError("录制任务仍在进行中")
+            connection.execute("UPDATE task_commands SET job_id = NULL WHERE job_id = ?", (job_id,))
+            connection.execute("UPDATE events SET job_id = NULL WHERE job_id = ?", (job_id,))
+            connection.execute("UPDATE recorded_files SET job_id = NULL WHERE job_id = ?", (job_id,))
+            connection.execute("DELETE FROM recording_jobs WHERE id = ?", (job_id,))
+            return True
+
     def register_file(self, path: str | Path, source: str = "download_watch", job_id: int | None = None,
                       room_id: int | None = None, downloaded_item_id: int | None = None,
                       create_upload: bool = True) -> dict[str, Any]:
@@ -253,7 +266,7 @@ class Repository:
                 (identity, file_id),
             ).fetchone()
             if existing:
-                raise ValueError("A recorded file with the same identity already exists")
+                raise ValueError("已存在相同文件记录")
             connection.execute(
                 """
                 UPDATE recorded_files
@@ -288,6 +301,13 @@ class Repository:
             row = connection.execute("SELECT id FROM recorded_files WHERE id = ?", (file_id,)).fetchone()
             if not row:
                 return False
+            upload_rows = connection.execute(
+                "SELECT id FROM upload_records WHERE recorded_file_id = ?",
+                (file_id,),
+            ).fetchall()
+            upload_ids = [row["id"] for row in upload_rows]
+            for upload_id in upload_ids:
+                connection.execute("UPDATE task_commands SET upload_id = NULL WHERE upload_id = ?", (upload_id,))
             connection.execute("DELETE FROM upload_records WHERE recorded_file_id = ?", (file_id,))
             connection.execute(
                 """
@@ -299,6 +319,28 @@ class Repository:
             )
             connection.execute("UPDATE download_watch_records SET recorded_file_id = NULL WHERE recorded_file_id = ?", (file_id,))
             connection.execute("DELETE FROM recorded_files WHERE id = ?", (file_id,))
+            return True
+
+    def delete_douyin_task(self, task_id: int) -> bool:
+        with self.database.transaction() as connection:
+            row = connection.execute("SELECT * FROM douyin_collection_tasks WHERE id = ?", (task_id,)).fetchone()
+            if not row:
+                return False
+            if row["status"] in {"queued", "running"}:
+                raise RuntimeError("抖音下载任务仍在进行中")
+            item_rows = connection.execute(
+                "SELECT id, recorded_file_id FROM douyin_downloaded_items WHERE task_id = ?",
+                (task_id,),
+            ).fetchall()
+            item_ids = [item["id"] for item in item_rows]
+            recorded_file_ids = [item["recorded_file_id"] for item in item_rows if item["recorded_file_id"]]
+            for item_id in item_ids:
+                connection.execute("UPDATE upload_records SET downloaded_item_id = NULL WHERE downloaded_item_id = ?", (item_id,))
+            for file_id in recorded_file_ids:
+                connection.execute("UPDATE upload_records SET downloaded_item_id = NULL WHERE recorded_file_id = ?", (file_id,))
+            connection.execute("UPDATE events SET douyin_task_id = NULL WHERE douyin_task_id = ?", (task_id,))
+            connection.execute("DELETE FROM douyin_downloaded_items WHERE task_id = ?", (task_id,))
+            connection.execute("DELETE FROM douyin_collection_tasks WHERE id = ?", (task_id,))
             return True
 
     def retry_upload(self, upload_id: int) -> dict[str, Any] | None:
@@ -383,7 +425,7 @@ class Repository:
                 (status, message[:1000], command_id),
             )
 
-    def mark_recording_job_status(self, job_id: int, status: str, worker_id: str = "") -> None:
+    def mark_recording_job_status(self, job_id: int, status: str, worker_id: str = "", error_message: str = "") -> None:
         fields = ["status = ?", "updated_at = CURRENT_TIMESTAMP"]
         values: list[Any] = [status]
         if status in {"probing", "recording"}:
@@ -393,6 +435,9 @@ class Repository:
         if worker_id:
             fields.append("worker_id = ?")
             values.append(worker_id)
+        if error_message:
+            fields.append("error_message = ?")
+            values.append(error_message[:2000])
         values.append(job_id)
         with self.database.transaction() as connection:
             connection.execute(f"UPDATE recording_jobs SET {', '.join(fields)} WHERE id = ?", tuple(values))

@@ -23,8 +23,8 @@ class UploadService:
     def retry(self, upload_id: int) -> dict:
         upload = self.repository.retry_upload(upload_id)
         if not upload:
-            raise HTTPException(status_code=404, detail="Upload record not found")
-        self.repository.add_event("upload_retry_requested", f"Retry requested for upload {upload_id}", upload_id=upload_id)
+            raise HTTPException(status_code=404, detail="上传记录不存在")
+        self.repository.add_event("upload_retry_requested", f"已请求重试上传 #{upload_id}", upload_id=upload_id)
         return upload
 
     async def run_loop(self, stop_event: asyncio.Event) -> None:
@@ -56,10 +56,10 @@ class UploadService:
                 continue
             path = Path(row["local_path"])
             if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
-                self.repository.mark_upload_failed(upload_id, "File is missing or empty")
+                self.repository.mark_upload_failed(upload_id, "文件不存在或为空")
                 continue
             if not uploader._is_eligible(path):
-                self.repository.mark_upload_failed(upload_id, "File is not eligible for YouTube upload")
+                self.repository.mark_upload_failed(upload_id, "文件不符合 YouTube 上传条件")
                 continue
             self.repository.mark_upload_status(upload_id, "uploading")
             self._running_uploads.add(upload_id)
@@ -87,10 +87,10 @@ class UploadService:
             status = item.get("status") or last_status
             if status == "uploaded":
                 self.repository.mark_upload_status(upload_id, "uploaded", youtube_video_id=item.get("youtube_video_id", ""))
-                self.repository.add_event("upload_completed", f"Upload {upload_id} completed", upload_id=upload_id)
+                self.repository.add_event("upload_completed", f"上传 #{upload_id} 已完成", upload_id=upload_id)
                 return
             if status == "failed":
-                self.repository.mark_upload_failed(upload_id, item.get("last_error", "Upload failed"))
+                self.repository.mark_upload_failed(upload_id, item.get("last_error", "上传失败"))
                 return
             last_status = status
             time.sleep(1)
@@ -99,27 +99,42 @@ class UploadService:
         if self._uploader is not None:
             return self._uploader
         settings = self.repository.get_setting("ini.YouTube上传", {})
-        enabled = self._yes(settings.get("是否启用YouTube上传(是/否)", "否"))
+        enabled = self._yes(self._setting(settings, "是否启用YouTube上传(是/否)", "youtube上传", "否"))
         if not enabled:
             return None
-        client_secret = self._setting_path(settings, "YouTube客户端密钥文件路径", "config/youtube_client_secret.json")
-        token_file = self._setting_path(settings, "YouTube令牌文件路径", "config/youtube_token.json")
-        state_file = self._setting_path(settings, "YouTube上传状态文件路径", "config/youtube_upload_state.json")
+        client_secret = self._setting_path(
+            settings,
+            ("YouTube客户端密钥文件路径", "youtube客户端密钥文件路径"),
+            "config/youtube_client_secret.json",
+        )
+        token_file = self._setting_path(
+            settings,
+            ("YouTube令牌文件路径", "youtube令牌文件路径"),
+            "config/youtube_token.json",
+        )
+        state_file = self._setting_path(
+            settings,
+            ("YouTube上传状态文件路径", "youtube上传状态文件路径"),
+            "config/youtube_upload_state.json",
+        )
         if not client_secret.exists():
-            self.repository.add_event("upload_disabled", "YouTube client secret file is missing", level="error")
+            self.repository.add_event("upload_disabled", "缺少 YouTube 客户端密钥文件", level="error")
             return None
         config = YouTubeUploadConfig(
             enabled=True,
             client_secret_file=str(client_secret),
             token_file=str(token_file),
             state_file=str(state_file),
-            privacy_status=str(settings.get("视频隐私状态(public/private/unlisted)", "public")),
-            title_template=str(settings.get("视频标题模板", "{record_name}")),
-            description=str(settings.get("视频描述", "")),
-            tags=self._tags(settings.get("视频标签(逗号分隔)", "")),
-            category_id=str(settings.get("视频分类ID", "22")),
-            allowed_extensions=self._extensions(settings.get("YouTube上传文件扩展名(逗号分隔)", "mp4,mkv,flv,ts")),
-            max_attempts=int(settings.get("失败重试次数", 3) or 3),
+            privacy_status=str(self._setting(settings, "视频隐私状态(public/private/unlisted)", "youtube隐私状态(public|unlisted|private)", "public")),
+            title_template=str(self._setting(settings, "视频标题模板", "youtube视频标题模板", "{record_name}")),
+            description=str(self._setting(settings, "视频描述", "youtube视频描述", "")),
+            tags=self._tags(self._setting(settings, "视频标签(逗号分隔)", "youtube视频标签(逗号分隔)", "")),
+            category_id=str(self._setting(settings, "视频分类ID", "youtube视频分类id", "22")),
+            allowed_extensions=self._extensions(
+                self._setting(settings, "YouTube上传文件扩展名(逗号分隔)", "youtube上传文件扩展名(逗号分隔)", "mp4,mkv,flv,ts")
+            ),
+            max_attempts=int(self._setting(settings, "失败重试次数", "youtube失败重试次数", 3) or 3),
+            enqueue_retryable_on_start=False,
         )
         self._uploader = create_youtube_uploader(config)
         return self._uploader
@@ -137,8 +152,21 @@ class UploadService:
         return {item.strip().lower().lstrip(".") for item in str(value or "").split(",") if item.strip()}
 
     @staticmethod
-    def _setting_path(settings: dict, key: str, default: str) -> Path:
-        raw = settings.get(key, default)
+    def _setting(settings: dict, *keys_and_default: Any) -> Any:
+        *keys, default = keys_and_default
+        for key in keys:
+            if key in settings:
+                return settings[key]
+        lower_map = {str(key).lower(): value for key, value in settings.items()}
+        for key in keys:
+            lowered = str(key).lower()
+            if lowered in lower_map:
+                return lower_map[lowered]
+        return default
+
+    @staticmethod
+    def _setting_path(settings: dict, keys: tuple[str, ...], default: str) -> Path:
+        raw = UploadService._setting(settings, *keys, default)
         if isinstance(raw, dict):
             raw = default
         return resolve_path(str(raw), PROJECT_ROOT)

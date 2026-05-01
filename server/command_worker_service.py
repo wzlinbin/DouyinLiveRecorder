@@ -33,7 +33,7 @@ class CommandWorkerService:
                 self.repository.finish_command(command["id"], "failed", str(error))
                 job_id = command.get("job_id")
                 if job_id:
-                    self.repository.mark_recording_job_status(job_id, "failed")
+                    self.repository.mark_recording_job_status(job_id, "failed", error_message=str(error))
             processed += 1
         return processed
 

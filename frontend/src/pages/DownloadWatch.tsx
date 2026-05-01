@@ -6,7 +6,7 @@ import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import { useAppStore } from '../stores/appStore'
 import type { DownloadWatchRecord, DownloadWatchSettings } from '../types/admin'
-import { fileName, formatBytes } from '../utils/format'
+import { dirName, fileName, formatBytes, formatDateTime } from '../utils/format'
 
 type WatchFormValues = DownloadWatchSettings & {
   directoriesText?: string[]
@@ -89,7 +89,7 @@ function DownloadWatch() {
               <Switch />
             </Form.Item>
             <Form.Item name="directoriesText" label="监控目录">
-              <Select mode="tags" placeholder="输入目录后回车" tokenSeparators={[',']} />
+              <Select mode="tags" placeholder="输入完整目录路径后回车" tokenSeparators={[',']} />
             </Form.Item>
             <Form.Item name="poll_interval_seconds" label="轮询间隔（秒）">
               <InputNumber min={2} style={{ width: '100%' }} />
@@ -100,7 +100,7 @@ function DownloadWatch() {
             <Form.Item name="transcode_non_mp4" label="非 MP4 自动转码" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item name="reencode_h264" label="强制 H.264 重编码" valuePropName="checked">
+            <Form.Item name="reencode_h264" label="强制 H.264 重新编码" valuePropName="checked">
               <Switch />
             </Form.Item>
             <Form.Item name="delete_origin_after_transcode" label="转码后删除原文件" valuePropName="checked">
@@ -129,12 +129,12 @@ function DownloadWatch() {
           dataSource={records}
           columns={[
             { title: '文件', dataIndex: 'local_path', render: (path) => fileName(path) },
-            { title: '目录', dataIndex: 'source_dir' },
+            { title: '完整目录', dataIndex: 'local_path', render: (path) => dirName(path) },
             { title: '大小', dataIndex: 'observed_size', width: 110, render: formatBytes },
             { title: '稳定次数', dataIndex: 'stable_count', width: 100 },
             { title: '状态', dataIndex: 'status', width: 110, render: (status) => <StatusBadge status={status} /> },
             { title: '编码', dataIndex: 'encoding_status', width: 120, render: (status) => <StatusBadge status={status} /> },
-            { title: '更新时间', dataIndex: 'updated_at', width: 180 },
+            { title: '更新时间', dataIndex: 'updated_at', width: 180, render: formatDateTime },
           ]}
         />
       </Card>
