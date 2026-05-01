@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS recording_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_recording_jobs_room_status ON recording_jobs(room_id, status);
+CREATE INDEX IF NOT EXISTS idx_recording_jobs_status_id ON recording_jobs(status, id DESC);
+CREATE INDEX IF NOT EXISTS idx_recording_jobs_room_id ON recording_jobs(room_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS recorded_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +58,11 @@ CREATE TABLE IF NOT EXISTS recorded_files (
     FOREIGN KEY(room_id) REFERENCES rooms(id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_recorded_files_created_at ON recorded_files(created_at);
+CREATE INDEX IF NOT EXISTS idx_recorded_files_room_id ON recorded_files(room_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_recorded_files_job_id ON recorded_files(job_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_recorded_files_status_id ON recorded_files(status, id DESC);
+
 CREATE TABLE IF NOT EXISTS download_watch_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_dir TEXT NOT NULL,
@@ -74,6 +81,9 @@ CREATE TABLE IF NOT EXISTS download_watch_records (
     FOREIGN KEY(recorded_file_id) REFERENCES recorded_files(id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_download_watch_status_id ON download_watch_records(status, id DESC);
+CREATE INDEX IF NOT EXISTS idx_download_watch_updated_at ON download_watch_records(updated_at);
+
 CREATE TABLE IF NOT EXISTS douyin_collection_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_type TEXT NOT NULL,
@@ -88,6 +98,8 @@ CREATE TABLE IF NOT EXISTS douyin_collection_tasks (
     ended_at TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_douyin_tasks_status_id ON douyin_collection_tasks(status, id DESC);
 
 CREATE TABLE IF NOT EXISTS douyin_downloaded_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,6 +120,9 @@ CREATE TABLE IF NOT EXISTS douyin_downloaded_items (
     FOREIGN KEY(recorded_file_id) REFERENCES recorded_files(id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_douyin_items_task_id_id ON douyin_downloaded_items(task_id, id ASC);
+CREATE INDEX IF NOT EXISTS idx_douyin_items_status_id ON douyin_downloaded_items(status, id DESC);
+
 CREATE TABLE IF NOT EXISTS upload_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recorded_file_id INTEGER,
@@ -127,6 +142,9 @@ CREATE TABLE IF NOT EXISTS upload_records (
     FOREIGN KEY(downloaded_item_id) REFERENCES douyin_downloaded_items(id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_upload_records_status_id ON upload_records(status, id ASC);
+CREATE INDEX IF NOT EXISTS idx_upload_records_youtube_status ON upload_records(status, youtube_video_id);
+
 CREATE TABLE IF NOT EXISTS youtube_metrics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     youtube_video_id TEXT NOT NULL,
@@ -137,6 +155,8 @@ CREATE TABLE IF NOT EXISTS youtube_metrics (
     fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(youtube_video_id, metric_date)
 );
+
+CREATE INDEX IF NOT EXISTS idx_youtube_metrics_date_id ON youtube_metrics(metric_date DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -161,6 +181,8 @@ CREATE TABLE IF NOT EXISTS task_commands (
     FOREIGN KEY(upload_id) REFERENCES upload_records(id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_task_commands_status_id ON task_commands(status, id ASC);
+
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_type TEXT NOT NULL,
@@ -172,4 +194,6 @@ CREATE TABLE IF NOT EXISTS events (
     level TEXT NOT NULL DEFAULT 'info',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_events_created_at_id ON events(created_at DESC, id DESC);
 """

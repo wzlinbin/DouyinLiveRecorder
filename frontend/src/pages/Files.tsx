@@ -193,6 +193,7 @@ function Files() {
           rowKey="id"
           loading={loading}
           dataSource={filteredFiles}
+          pagination={{ pageSize: 25, showSizeChanger: true }}
           rowSelection={{
             selectedRowKeys,
             onChange: setSelectedRowKeys,

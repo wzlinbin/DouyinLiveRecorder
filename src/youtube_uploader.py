@@ -161,7 +161,7 @@ class YouTubeUploader:
                 "privacyStatus": self.config.privacy_status,
             },
         }
-        media = MediaFileUpload(str(path), chunksize=-1, resumable=True)
+        media = MediaFileUpload(str(path), chunksize=8 * 1024 * 1024, resumable=True)
         request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
         response = None

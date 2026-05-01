@@ -20,6 +20,7 @@ from .download_watch_service import DownloadWatchService
 from .recorder_process_service import RecorderProcessService
 from .recording_service import RecordingService
 from .repository import Repository
+from .runtime_config import admin_token
 from .schemas import (
     ConfigSectionPatch,
     DouyinSingleRequest,
@@ -85,9 +86,9 @@ app.mount(
 
 
 def require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("ADMIN_API_TOKEN")
+    expected = admin_token()
     if not expected:
-        raise HTTPException(status_code=503, detail="服务端未配置 ADMIN_API_TOKEN")
+        raise HTTPException(status_code=503, detail="服务端未配置 后台管理 Token")
     if x_admin_token != expected:
         raise HTTPException(status_code=401, detail="管理员 Token 无效")
 
@@ -177,7 +178,7 @@ def index() -> HTMLResponse | FileResponse:
     if frontend_build_available():
         return FileResponse(FRONTEND_INDEX)
 
-    initial_state = json.dumps({"tokenConfigured": bool(os.environ.get("ADMIN_API_TOKEN"))}, ensure_ascii=False)
+    initial_state = json.dumps({"tokenConfigured": bool(admin_token())}, ensure_ascii=False)
     template = """
 <!doctype html>
 <html lang="zh-CN">
@@ -389,7 +390,7 @@ def index() -> HTMLResponse | FileResponse:
         <h1 class="title">后台管理</h1>
         <p class="subtitle">
           这里聚合了直播间、录制任务、上传队列、下载监控和最近事件。默认只读，填入
-          <code>ADMIN_API_TOKEN</code> 后即可直接在页面里执行启动、停止、扫描和刷新操作。
+          <code>后台管理 Token</code> 后即可直接在页面里执行启动、停止、扫描和刷新操作。
         </p>
       </div>
       <div class="toolbar">
@@ -927,7 +928,7 @@ def index() -> HTMLResponse | FileResponse:
     });
 
     if (!state.tokenConfigured) {
-      setBanner('服务端尚未配置 ADMIN_API_TOKEN，当前页面仅能查看只读数据。');
+      setBanner('服务端尚未配置 后台管理 Token，当前页面仅能查看只读数据。');
     } else {
       setBanner('后台已就绪，点击“刷新总览”或直接操作页面。');
     }
@@ -1057,10 +1058,10 @@ def stop_room(room_id: int) -> dict:
 
 
 @app.get("/api/jobs")
-def list_jobs(status: str | None = None) -> dict[str, list[dict]]:
+def list_jobs(status: str | None = None, limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, list[dict]]:
     if status:
-        return {"data": repository.list_rows("recording_jobs", where="status = ?", params=(status,))}
-    return {"data": repository.list_rows("recording_jobs")}
+        return {"data": repository.list_rows("recording_jobs", where="status = ?", params=(status,), limit=limit)}
+    return {"data": repository.list_rows("recording_jobs", limit=limit)}
 
 
 @app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_admin_token)])
@@ -1076,10 +1077,10 @@ def delete_job(job_id: int) -> dict[str, bool]:
 
 
 @app.get("/api/task-commands")
-def list_task_commands(status: str | None = None) -> dict[str, list[dict]]:
+def list_task_commands(status: str | None = None, limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, list[dict]]:
     if status:
-        return {"data": repository.list_rows("task_commands", where="status = ?", params=(status,))}
-    return {"data": repository.list_rows("task_commands")}
+        return {"data": repository.list_rows("task_commands", where="status = ?", params=(status,), limit=limit)}
+    return {"data": repository.list_rows("task_commands", limit=limit)}
 
 
 @app.get("/api/recording-runtime")
@@ -1094,6 +1095,7 @@ def list_files(
     status: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict[str, list[dict]]:
     clauses = []
     params: list[Any] = []
@@ -1112,7 +1114,7 @@ def list_files(
     if date_to:
         clauses.append("created_at <= ?")
         params.append(date_to)
-    return {"data": repository.list_rows("recorded_files", where=" AND ".join(clauses), params=tuple(params))}
+    return {"data": repository.list_rows("recorded_files", where=" AND ".join(clauses), params=tuple(params), limit=limit)}
 
 
 def get_recorded_file_or_404(file_id: int) -> dict:
@@ -1186,10 +1188,10 @@ def delete_file(file_id: int) -> dict[str, bool]:
 
 
 @app.get("/api/uploads")
-def list_uploads(status: str | None = None) -> dict[str, list[dict]]:
+def list_uploads(status: str | None = None, limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, list[dict]]:
     if status:
-        return {"data": repository.list_rows("upload_records", where="status = ?", params=(status,))}
-    return {"data": repository.list_rows("upload_records")}
+        return {"data": repository.list_rows("upload_records", where="status = ?", params=(status,), limit=limit)}
+    return {"data": repository.list_rows("upload_records", limit=limit)}
 
 
 @app.post("/api/uploads/{upload_id}/retry", dependencies=[Depends(require_admin_token)])
@@ -1230,8 +1232,8 @@ async def create_douyin_user_download(request: DouyinUserRequest) -> dict:
 
 
 @app.get("/api/douyin/tasks")
-def list_douyin_tasks() -> dict[str, list[dict]]:
-    return {"data": repository.list_rows("douyin_collection_tasks")}
+def list_douyin_tasks(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, list[dict]]:
+    return {"data": repository.list_rows("douyin_collection_tasks", limit=limit)}
 
 
 @app.get("/api/douyin/tasks/{task_id}")

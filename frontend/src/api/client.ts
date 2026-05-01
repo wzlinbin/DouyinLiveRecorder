@@ -101,16 +101,16 @@ export const adminApi = {
     const { data } = await api.post<RecordingJob>(`/rooms/${roomId}/stop`, undefined, { headers: authHeaders(token) })
     return data
   },
-  async jobs(status?: string) {
-    const { data } = await api.get<ApiList<RecordingJob>>('/jobs', { params: status ? { status } : undefined })
+  async jobs(status?: string, limit = 200) {
+    const { data } = await api.get<ApiList<RecordingJob>>('/jobs', { params: { ...(status ? { status } : {}), limit } })
     return data.data
   },
   async deleteJob(token: string, jobId: number) {
     const { data } = await api.delete<{ deleted: boolean }>(`/jobs/${jobId}`, { headers: authHeaders(token) })
     return data
   },
-  async files(params?: { room_id?: number; job_id?: number; status?: string }) {
-    const { data } = await api.get<ApiList<RecordedFile>>('/files', { params })
+  async files(params?: { room_id?: number; job_id?: number; status?: string; limit?: number }) {
+    const { data } = await api.get<ApiList<RecordedFile>>('/files', { params: { limit: 200, ...params } })
     return data.data
   },
   async transcodeFile(token: string, fileId: number, payload: { delete_origin: boolean; reencode_h264: boolean }) {
@@ -125,8 +125,8 @@ export const adminApi = {
     const { data } = await api.delete<{ deleted: boolean }>(`/files/${fileId}`, { headers: authHeaders(token) })
     return data
   },
-  async uploads(status?: string) {
-    const { data } = await api.get<ApiList<UploadRecord>>('/uploads', { params: status ? { status } : undefined })
+  async uploads(status?: string, limit = 200) {
+    const { data } = await api.get<ApiList<UploadRecord>>('/uploads', { params: { ...(status ? { status } : {}), limit } })
     return data.data
   },
   async retryUpload(token: string, uploadId: number) {
@@ -149,8 +149,8 @@ export const adminApi = {
     })
     return data
   },
-  async douyinTasks() {
-    const { data } = await api.get<ApiList<DouyinTask>>('/douyin/tasks')
+  async douyinTasks(limit = 200) {
+    const { data } = await api.get<ApiList<DouyinTask>>('/douyin/tasks', { params: { limit } })
     return data.data
   },
   async douyinTask(taskId: number) {

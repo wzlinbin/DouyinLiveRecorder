@@ -166,6 +166,7 @@ function Jobs() {
           rowKey="id"
           loading={loading}
           dataSource={jobs}
+          pagination={{ pageSize: 25, showSizeChanger: true }}
           rowSelection={{
             selectedRowKeys,
             onChange: setSelectedRowKeys,

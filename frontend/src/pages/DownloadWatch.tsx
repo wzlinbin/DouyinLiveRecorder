@@ -127,6 +127,7 @@ function DownloadWatch() {
           rowKey="id"
           loading={loading}
           dataSource={records}
+          pagination={{ pageSize: 25, showSizeChanger: true }}
           columns={[
             { title: '文件', dataIndex: 'local_path', render: (path) => fileName(path) },
             { title: '完整目录', dataIndex: 'local_path', render: (path) => dirName(path) },

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from server.runtime_config import admin_token
 from pydantic import BaseModel, Field
 
 from src.douyin_collection import (
@@ -18,9 +17,9 @@ app = FastAPI(title="DouyinLiveRecorder API", version="1.0.0")
 
 
 def require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("ADMIN_API_TOKEN")
+    expected = admin_token()
     if not expected:
-        raise HTTPException(status_code=503, detail="ADMIN_API_TOKEN is not configured")
+        raise HTTPException(status_code=503, detail="后台管理 Token 未配置")
     if x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 

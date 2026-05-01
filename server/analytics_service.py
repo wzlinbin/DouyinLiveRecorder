@@ -51,9 +51,11 @@ class AnalyticsService:
             order_by="id ASC",
         )
         result = []
+        seen = set()
         for row in rows:
             video_id = row.get("youtube_video_id")
-            if video_id and video_id not in result:
+            if video_id and video_id not in seen:
+                seen.add(video_id)
                 result.append(video_id)
         return result
 

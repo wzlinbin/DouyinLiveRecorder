@@ -111,6 +111,7 @@ function Uploads() {
           rowKey="id"
           loading={loading}
           dataSource={uploads}
+          pagination={{ pageSize: 25, showSizeChanger: true }}
           columns={[
             {
               title: '文件',

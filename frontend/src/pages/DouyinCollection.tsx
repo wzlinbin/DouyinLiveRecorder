@@ -186,7 +186,7 @@ function DouyinCollection() {
             rowKey="id"
             loading={loading}
             dataSource={tasks}
-            pagination={{ pageSize: 6 }}
+            pagination={{ pageSize: 10, showSizeChanger: true }}
             rowSelection={{
               selectedRowKeys,
               onChange: setSelectedRowKeys,
